@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::{
     env,
     fs::File,
@@ -29,7 +30,7 @@ struct AuxRegs {
 #[derive(Debug)]
 struct TestMemory {
     start: u16,
-    data: [u8; 0],
+    data: Vec<u8>,
 }
 
 #[test]
@@ -39,27 +40,32 @@ fn test_opcodes() {
     let results = read_tests(path.join("tests.out"));
     assert_eq!(tests.len(), results.len());
 
-    for t in 0..tests.len() {
-        let cpu = z80::CPU::new(TestBus);
-        cpu.tick();
-    }
-}
+    for t in 0..2 {
+        println!("\n---- {} ----", t);
+        let test = &tests[t];
+        let result = &results[t];
+        let mut mem = [0 as u8; 0x010000];
 
-impl z80::Bus for TestBus {
-    fn SetAddr(&self, addr: u16) {
-        todo!()
-    }
+        for test_mem in &test.memory {
+            let mut start = test_mem.start;
+            for d in &test_mem.data {
+                mem[start as usize] = *d;
+                start += 1;
+            }
+        }
 
-    fn ReadMemory(&self) {
-        todo!()
-    }
-
-    fn GetData(&self) -> u8 {
-        todo!()
-    }
-
-    fn Release(&self) {
-        todo!()
+        let mut cpu = z80::CPU::new();
+        for _ in 0..result.aux_rgs.ts {
+            match cpu.signals.mem {
+                z80::SignalReq::Read => cpu.signals.data = mem[cpu.signals.addr as usize],
+                z80::SignalReq::Write => mem[cpu.signals.addr as usize] = cpu.signals.data,
+                z80::SignalReq::None => (),
+            }
+            cpu.tick();
+        }
+        println!("------------");
+        println!("regs: {:?}", cpu.regs);
+        println!("------------\n");
     }
 }
 
@@ -73,7 +79,7 @@ fn read_tests(path: PathBuf) -> Vec<TestDefinition> {
         let line = l.unwrap();
         match line.as_str() {
             "" => {
-                println!("{:?}", lines);
+                // println!("{:?}", lines);
                 let test = TestDefinition {
                     name: lines.remove(0),
                     registers: parse_regs(lines.remove(0)),
@@ -99,9 +105,14 @@ fn parse_memory(lines: &Vec<String>) -> Vec<TestMemory> {
         .iter()
         .map(|line| -> TestMemory {
             let addr = u16::from_str_radix(&line[0..4], 16);
+            let data: Vec<u8> = line[line.find(" ").unwrap()..line.rfind(" ").unwrap()]
+                .split_whitespace()
+                .map(|i| u8::from_str_radix(i, 16).unwrap())
+                .collect();
+
             TestMemory {
                 start: addr.unwrap(),
-                data: [],
+                data: data,
             }
         })
         .collect()

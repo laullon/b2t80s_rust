@@ -6,7 +6,8 @@ use std::{
     path::PathBuf,
 };
 
-use b2t80s_rust::z80;
+use b2t80s_rust::z80::registers::Registers;
+use b2t80s_rust::z80::{self};
 
 #[derive(Debug)]
 struct TestDefinition {
@@ -40,11 +41,11 @@ fn test_opcodes() {
     let results = read_tests(path.join("tests.out"));
     assert_eq!(tests.len(), results.len());
 
-    for t in 0..2 {
-        println!("\n---- {} ----", t);
+    for t in 0..0x100 {
         let test = &tests[t];
         let result = &results[t];
         let mut mem = [0 as u8; 0x010000];
+        println!("\n---- {} ----", test.name);
 
         for test_mem in &test.memory {
             let mut start = test_mem.start;
@@ -55,18 +56,61 @@ fn test_opcodes() {
         }
 
         let mut cpu = z80::CPU::new();
+
+        cpu.regs.set_af(test.registers[0]);
+        cpu.regs.set_bc(test.registers[1]);
+        cpu.regs.set_de(test.registers[2]);
+        cpu.regs.set_hl(test.registers[3]);
+        cpu.regs.set_af_aux(test.registers[4]);
+        cpu.regs.set_bc_aux(test.registers[5]);
+        cpu.regs.set_de_aux(test.registers[6]);
+        cpu.regs.set_hl_aux(test.registers[7]);
+        cpu.regs.ix = test.registers[8];
+        cpu.regs.iy = test.registers[9];
+        cpu.regs.sp = test.registers[10];
+        cpu.regs.pc = test.registers[11];
+
         for _ in 0..result.aux_rgs.ts {
             match cpu.signals.mem {
-                z80::SignalReq::Read => cpu.signals.data = mem[cpu.signals.addr as usize],
-                z80::SignalReq::Write => mem[cpu.signals.addr as usize] = cpu.signals.data,
+                z80::SignalReq::Read => {
+                    cpu.signals.data = mem[cpu.signals.addr as usize];
+                    println!("    MR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                }
+                z80::SignalReq::Write => {
+                    mem[cpu.signals.addr as usize] = cpu.signals.data;
+                    println!("    MW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                }
                 z80::SignalReq::None => (),
             }
             cpu.tick();
         }
         println!("------------");
-        println!("regs: {:?}", cpu.regs);
+        let cpu_regs = dump_registers(cpu.regs);
+        let res_regs = result.registers.map(|d| format!("{:04x}", d)).join(" ");
+        let cpu_f = format!("{:08b}", cpu.regs.f.get());
+        let res_f = format!("{:08b}", result.registers[0] as u8);
+        assert_eq!(cpu_f, res_f, "flags fail !!!");
+        assert_eq!(cpu_regs, res_regs, "regs fail !!!");
         println!("------------\n");
     }
+}
+
+fn dump_registers(regs: Registers) -> String {
+    format!(
+        "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x}",
+        regs.af(),
+        regs.bc(),
+        regs.de(),
+        regs.hl(),
+        regs.af_aux(),
+        regs.bc_aux(),
+        regs.de_aux(),
+        regs.hl_aux(),
+        regs.ix,
+        regs.iy,
+        regs.sp,
+        regs.pc,
+    )
 }
 
 fn read_tests(path: PathBuf) -> Vec<TestDefinition> {
@@ -119,10 +163,12 @@ fn parse_memory(lines: &Vec<String>) -> Vec<TestMemory> {
 }
 
 fn parse_regs(regs: String) -> [u16; 12] {
-    let res: Vec<u16> = regs
+    let mut res: Vec<u16> = regs
         .split_whitespace()
         .map(|i| u16::from_str_radix(i, 16).unwrap())
         .collect();
+    res[0] = res[0] & 0b11111111_11010111; // flags 3&5 removed
+    res[4] = res[4] & 0b11111111_11010111; // flags 3&5 removed
     return res.as_slice().try_into().expect("ERRRRRRR");
 }
 

@@ -6,8 +6,12 @@ use std::{
     path::PathBuf,
 };
 
-use b2t80s_rust::z80::registers::Registers;
-use b2t80s_rust::z80::{self};
+use crate::z80::{cpu::SignalReq, cpu::CPU};
+
+use super::registers::Registers;
+
+// use b2t80s_rust::z80::registers::Registers;
+// use b2t80s_rust::z80::{self};
 
 #[derive(Debug)]
 struct TestDefinition {
@@ -55,7 +59,7 @@ fn test_opcodes() {
             }
         }
 
-        let mut cpu = z80::CPU::new();
+        let mut cpu = CPU::new();
 
         cpu.regs.set_af(test.registers[0]);
         cpu.regs.set_bc(test.registers[1]);
@@ -72,15 +76,15 @@ fn test_opcodes() {
 
         for _ in 0..result.aux_rgs.ts {
             match cpu.signals.mem {
-                z80::SignalReq::Read => {
+                SignalReq::Read => {
                     cpu.signals.data = mem[cpu.signals.addr as usize];
                     println!("    MR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
                 }
-                z80::SignalReq::Write => {
+                SignalReq::Write => {
                     mem[cpu.signals.addr as usize] = cpu.signals.data;
                     println!("    MW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
                 }
-                z80::SignalReq::None => (),
+                SignalReq::None => (),
             }
             cpu.tick();
         }

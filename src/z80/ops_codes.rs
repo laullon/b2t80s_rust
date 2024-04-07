@@ -1,4 +1,5 @@
-use super::{Operation, CPU};
+use super::cpu::CPU;
+use crate::z80::cpu::Operation;
 
 const overflowAddTable: [bool; 8] = [false, false, false, true, true, false, false, false];
 const overflowSubTable: [bool; 8] = [false, true, false, false, false, false, true, false];

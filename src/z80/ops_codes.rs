@@ -28,12 +28,11 @@ const parityTable: [bool; 256] = [
 ];
 
 pub fn ld_rr_mm(cpu: &mut CPU, r: u8) {
-    println!("ld_rr_mm r:{} nn:{:?}", r, cpu.fetched.nn);
     match cpu.fetched.nn {
-        Some(v) => cpu.regs.set_rr(r, v),
+        Some(v) => cpu.regs.set_rr(r, v, false),
         None => {
-            cpu.scheduler.push(Operation::MR_N);
-            cpu.scheduler.push(Operation::MR_N);
+            cpu.scheduler.push(Operation::MR_PC_N);
+            cpu.scheduler.push(Operation::MR_PC_N);
         }
     }
 }
@@ -50,10 +49,9 @@ pub fn halt(cpu: &mut CPU) {
 
 pub fn ld_r_n(cpu: &mut CPU, y: u8) {
     match cpu.fetched.n {
-        None => cpu.scheduler.push(Operation::MR_N),
+        None => cpu.scheduler.push(Operation::MR_PC_N),
         Some(v) => match y {
             6 => {
-                cpu.current_ops = None;
                 cpu.scheduler.push(Operation::MW_8(cpu.regs.hl(), v));
             }
             _ => cpu.regs.set_r(y, v),
@@ -64,7 +62,6 @@ pub fn ld_r_n(cpu: &mut CPU, y: u8) {
 pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
     match (y, z) {
         (6, _) => {
-            cpu.current_ops = None;
             cpu.scheduler
                 .push(Operation::MW_8(cpu.regs.hl(), cpu.regs.get_r(z)));
         }
@@ -80,13 +77,13 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
 }
 
 pub fn inc_rr(cpu: &mut CPU, p: u8) {
-    let v = cpu.regs.get_rp(p) + 1;
-    cpu.regs.set_rr(p, v);
+    let v = cpu.regs.get_rp(p, false) + 1;
+    cpu.regs.set_rr(p, v, false);
 }
 
 pub fn dec_rr(cpu: &mut CPU, p: u8) {
-    let v = cpu.regs.get_rp(p).wrapping_sub(1);
-    cpu.regs.set_rr(p, v);
+    let v = cpu.regs.get_rp(p, false).wrapping_sub(1);
+    cpu.regs.set_rr(p, v, false);
 }
 
 pub fn inc_r(cpu: &mut CPU, r: u8) {
@@ -95,7 +92,7 @@ pub fn inc_r(cpu: &mut CPU, r: u8) {
             None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.hl())),
             Some(n) => {
                 let v = inc(cpu, n);
-                cpu.current_ops = None;
+
                 cpu.scheduler.push(Operation::MW_8(cpu.regs.hl(), v));
             }
         },
@@ -123,7 +120,7 @@ pub fn dec_r(cpu: &mut CPU, r: u8) {
             None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.hl())),
             Some(n) => {
                 let v = dec(cpu, n);
-                cpu.current_ops = None;
+
                 cpu.scheduler.push(Operation::MW_8(cpu.regs.hl(), v));
             }
         },
@@ -185,7 +182,7 @@ pub fn add_hl_rr(cpu: &mut CPU, p: u8) {
     // rIdx := cpu.fetched.opCode >> 4 & 0b11
     // reg := cpu.getRRptr(rIdx)
 
-    let v = cpu.regs.get_rp(p);
+    let v = cpu.regs.get_rp(p, false);
     let hl = cpu.regs.hl();
     let result = (hl as u32) + (v as u32);
     let lookup =
@@ -356,4 +353,81 @@ fn update_flags_ula_logic(cpu: &mut CPU) {
     cpu.regs.f.P = parityTable[cpu.regs.a as usize];
     cpu.regs.f.N = false;
     cpu.regs.f.C = false;
+}
+
+pub fn ret(cpu: &mut CPU) {
+    match cpu.fetched.nn {
+        None => {
+            cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.sp));
+            cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.sp + 1));
+        }
+        Some(nn) => {
+            cpu.regs.sp = cpu.regs.sp.wrapping_add(2);
+            cpu.regs.pc = nn;
+        }
+    }
+}
+
+pub fn jp(cpu: &mut CPU, y: Option<u8>) {
+    match cpu.fetched.nn {
+        None => {
+            cpu.scheduler.push(Operation::MR_PC_N);
+            cpu.scheduler.push(Operation::MR_PC_N);
+        }
+        Some(nn) => {
+            let mut jump = true;
+            match y {
+                Some(y) => jump = cpu.if_cc(y),
+                None => (),
+            }
+            if jump {
+                cpu.regs.pc = nn;
+            }
+        }
+    }
+}
+
+pub fn call(cpu: &mut CPU, y: Option<u8>) {
+    match cpu.fetched.nn {
+        None => {
+            cpu.scheduler.push(Operation::MR_PC_N);
+            cpu.scheduler.push(Operation::MR_PC_N);
+        }
+        Some(nn) => {
+            let mut jump = true;
+            match y {
+                Some(y) => jump = cpu.if_cc(y),
+                None => (),
+            }
+            if jump {
+                cpu.regs.sp = cpu.regs.sp.wrapping_sub(2);
+                cpu.scheduler.push(Operation::Delay(1));
+                cpu.scheduler
+                    .push(Operation::MW_16(cpu.regs.sp, cpu.regs.pc));
+                cpu.regs.pc = nn;
+                cpu.fetched.op_code = None;
+            }
+        }
+    }
+}
+
+pub fn push(cpu: &mut CPU, r: u8) {
+    cpu.fetched.op_code = None;
+    cpu.regs.sp = cpu.regs.sp.wrapping_sub(2);
+    cpu.scheduler.push(Operation::Delay(1));
+    cpu.scheduler
+        .push(Operation::MW_16(cpu.regs.sp, cpu.regs.get_rp(r, true)));
+}
+
+pub fn pop(cpu: &mut CPU, r: u8) {
+    match cpu.fetched.nn {
+        None => {
+            cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.sp));
+            cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.sp + 1));
+        }
+        Some(nn) => {
+            cpu.regs.sp = cpu.regs.sp.wrapping_add(2);
+            cpu.regs.set_rr(r, nn, true);
+        }
+    }
 }

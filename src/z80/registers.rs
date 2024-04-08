@@ -127,22 +127,34 @@ impl Registers {
         }
     }
 
-    pub fn get_rp(&mut self, r: u8) -> u16 {
+    pub fn get_rp(&mut self, r: u8, alt: bool) -> u16 {
         match r {
             0 => self.bc(),
             1 => self.de(),
             2 => self.hl(),
-            3 => self.sp,
+            3 => {
+                if alt {
+                    self.af()
+                } else {
+                    self.sp
+                }
+            }
             _ => panic!("set_rp r:{}", r),
         }
     }
 
-    pub fn set_rr(&mut self, r: u8, v: u16) {
+    pub fn set_rr(&mut self, r: u8, v: u16, alt: bool) {
         match r {
             0 => self.set_bc(v),
             1 => self.set_de(v),
             2 => self.set_hl(v),
-            3 => self.sp = v,
+            3 => {
+                if alt {
+                    self.set_af(v)
+                } else {
+                    self.sp = v
+                }
+            }
             _ => panic!("set_rp r:{}", r),
         }
     }

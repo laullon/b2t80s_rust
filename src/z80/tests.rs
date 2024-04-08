@@ -34,7 +34,7 @@ struct AuxRegs {
 
 #[derive(Debug)]
 struct TestMemory {
-    start: u16,
+    start: usize,
     data: Vec<u8>,
 }
 
@@ -95,6 +95,10 @@ fn test_opcodes() {
         let res_f = format!("{:08b}", result.registers[0] as u8);
         assert_eq!(cpu_f, res_f, "flags fail !!!");
         assert_eq!(cpu_regs, res_regs, "regs fail !!!");
+        for m in result.memory.iter() {
+            let cpu_mem = &mem[(m.start)..(m.start + m.data.len())];
+            assert_eq!(cpu_mem, m.data, "mem '{:04x}' fail !!!", m.start);
+        }
         println!("------------\n");
     }
 }
@@ -159,7 +163,7 @@ fn parse_memory(lines: &Vec<String>) -> Vec<TestMemory> {
                 .collect();
 
             TestMemory {
-                start: addr.unwrap(),
+                start: addr.unwrap() as usize,
                 data: data,
             }
         })

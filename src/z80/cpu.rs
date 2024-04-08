@@ -44,7 +44,8 @@ pub enum Operation {
     MW_8(u16, u8),
     MW_16(u16, u16),
     MR_ADDR_N(u16),
-    Delay,
+    MR_ADDR_R(u16, u8),
+    Delay(u8),
 }
 
 impl CPU {
@@ -111,7 +112,8 @@ impl CPU {
                     Operation::MW_8(addr, data) => self.mw_8(addr, data),
                     Operation::MW_16(addr, data) => self.mw_16(addr, data),
                     Operation::MR_ADDR_N(addr) => self.mr_addr_n(addr),
-                    Operation::Delay => self.delay(),
+                    Operation::MR_ADDR_R(addr, r) => self.mr_addr_r(addr, r),
+                    Operation::Delay(delay) => self.delay(delay),
                 };
                 if done {
                     self.current_ops = None;
@@ -144,6 +146,7 @@ impl CPU {
         match x {
             0 => self.x0_ops(z, y, q, p),
             1 => self.x1_ops(y, z),
+            2 => self.alu(y, z),
             _ => todo!("decode_and_run x:{}", x),
         }
         // let opc = &self.opsCodes[self.fetched.opCode as usize];
@@ -174,10 +177,10 @@ impl CPU {
             1 => rrca(self),
             2 => rla(self),
             3 => rra(self),
-            4 => (),
-            5 => (),
-            6 => (),
-            7 => (),
+            4 => daa(self),
+            5 => cpl(self),
+            6 => scf(self),
+            7 => ccf(self),
             _ => panic!(),
         }
     }
@@ -186,14 +189,51 @@ impl CPU {
         match y {
             0 => (), // NOP
             1 => exafaf(self),
+            2..=7 => match self.fetched.n {
+                None => self.scheduler.push(Operation::MR_N),
+                Some(_) => {
+                    let mut jump = true;
+                    match y {
+                        2 => {
+                            self.regs.b = self.regs.b.wrapping_sub(1);
+                            jump = self.regs.b != 0
+                        }
+                        3 => {}
+                        4 => jump = self.regs.f.Z == false,
+                        5 => jump = self.regs.f.Z == true,
+                        6 => jump = self.regs.f.C == false,
+                        7 => jump = self.regs.f.C == true,
+                        _ => panic!(),
+                    }
+                    if jump {
+                        let jump = self.fetched.n.unwrap() as i8;
+                        println!("pc:{} jump{}", self.regs.pc, jump);
+                        self.regs.pc = self.regs.pc.wrapping_add(jump as u16);
+                        self.scheduler.push(Operation::Delay(6));
+                    } else {
+                        self.scheduler.push(Operation::Delay(1));
+                    }
+                    self.fetched.op_code = None;
+                }
+            },
             _ => todo!("x0_z0_ops y:{}", y),
         }
     }
 
-    fn x1_ops(&mut self, z: u8, y: u8) {
-        match z {
-            6 => halt(self),
-            _ => panic!(),
+    fn alu(&mut self, y: u8, z: u8) {
+        match y {
+            0 => ula(self, ULA::AddA, z),
+            1 => ula(self, ULA::AdcA, z),
+            2 => ula(self, ULA::Sub, z),
+            3 => ula(self, ULA::SbcA, z),
+            _ => panic!("alu y:{}", y),
+        }
+    }
+
+    fn x1_ops(&mut self, y: u8, z: u8) {
+        match (y, z) {
+            (6, 6) => halt(self),
+            _ => ld_r_r(self, y, z),
         }
     }
 
@@ -203,13 +243,7 @@ impl CPU {
             1 => {
                 add_hl_rr(self, p);
                 self.fetched.op_code = None;
-                self.scheduler.push(Operation::Delay);
-                self.scheduler.push(Operation::Delay);
-                self.scheduler.push(Operation::Delay);
-                self.scheduler.push(Operation::Delay);
-                self.scheduler.push(Operation::Delay);
-                self.scheduler.push(Operation::Delay);
-                self.scheduler.push(Operation::Delay);
+                self.scheduler.push(Operation::Delay(7));
             }
             _ => panic!(),
         }
@@ -235,6 +269,15 @@ impl CPU {
                         self.scheduler.push(Operation::MW_16(self.regs.hl(), nn));
                     }
                 },
+                3 => match self.fetched.nn {
+                    None => {
+                        self.scheduler.push(Operation::MR_N);
+                        self.scheduler.push(Operation::MR_N);
+                    }
+                    Some(nn) => {
+                        self.scheduler.push(Operation::MW_8(nn, self.regs.a));
+                    }
+                },
                 _ => panic!("x0_z2_ops q:{} p:{}", q, p),
             },
             1 => match p {
@@ -243,6 +286,33 @@ impl CPU {
                         self.scheduler.push(Operation::MR_ADDR_N(self.regs.bc()));
                     }
                     Some(n) => self.regs.a = n,
+                },
+                1 => match self.fetched.n {
+                    None => {
+                        self.scheduler.push(Operation::MR_ADDR_N(self.regs.de()));
+                    }
+                    Some(n) => self.regs.a = n,
+                },
+                2 => match self.fetched.nn {
+                    None => {
+                        self.scheduler.push(Operation::MR_N);
+                        self.scheduler.push(Operation::MR_N);
+                    }
+                    Some(nn) => {
+                        self.fetched.op_code = None;
+                        self.scheduler.push(Operation::MR_ADDR_R(nn, 5));
+                        self.scheduler.push(Operation::MR_ADDR_R(nn + 1, 4));
+                    }
+                },
+                3 => match self.fetched.nn {
+                    None => {
+                        self.scheduler.push(Operation::MR_N);
+                        self.scheduler.push(Operation::MR_N);
+                    }
+                    Some(nn) => {
+                        self.fetched.op_code = None;
+                        self.scheduler.push(Operation::MR_ADDR_R(nn, 7));
+                    }
                 },
                 _ => panic!("x0_z2_ops q:{} p:{}", q, p),
             },
@@ -257,8 +327,7 @@ impl CPU {
             _ => panic!(),
         }
         self.fetched.op_code = None;
-        self.scheduler.push(Operation::Delay);
-        self.scheduler.push(Operation::Delay);
+        self.scheduler.push(Operation::Delay(2));
     }
 
     fn exec_interrupt(&self) {
@@ -308,6 +377,21 @@ impl CPU {
             2 => self.signals.mem = SignalReq::Read,
             3 => {
                 self.fetched.n = Some(self.signals.data);
+                self.signals.mem = SignalReq::None;
+                return true;
+            }
+            _ => panic!(),
+        }
+        false
+    }
+
+    fn mr_addr_r(self: &mut Self, addr: u16, r: u8) -> bool {
+        self.current_ops_ts += 1;
+        match self.current_ops_ts {
+            1 => self.signals.addr = addr,
+            2 => self.signals.mem = SignalReq::Read,
+            3 => {
+                self.regs.set_r(r, self.signals.data);
                 self.signals.mem = SignalReq::None;
                 return true;
             }
@@ -381,7 +465,8 @@ impl CPU {
         false
     }
 
-    fn delay(self: &mut Self) -> bool {
-        true
+    fn delay(self: &mut Self, delay: u8) -> bool {
+        self.current_ops_ts += 1;
+        self.current_ops_ts == delay
     }
 }

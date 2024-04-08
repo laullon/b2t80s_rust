@@ -226,6 +226,10 @@ impl CPU {
             1 => ula(self, ULA::AdcA, z),
             2 => ula(self, ULA::Sub, z),
             3 => ula(self, ULA::SbcA, z),
+            4 => ula(self, ULA::AND, z),
+            5 => ula(self, ULA::XOR, z),
+            6 => ula(self, ULA::OR, z),
+            7 => ula(self, ULA::CP, z),
             _ => panic!("alu y:{}", y),
         }
     }

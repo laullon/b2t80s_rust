@@ -243,6 +243,10 @@ pub enum ULA {
     AdcA,
     Sub,
     SbcA,
+    OR,
+    XOR,
+    AND,
+    CP,
 }
 
 pub fn ula(cpu: &mut CPU, f: ULA, r: u8) {
@@ -260,79 +264,96 @@ pub fn ula(cpu: &mut CPU, f: ULA, r: u8) {
             ULA::AdcA => adc_a(cpu, v),
             ULA::Sub => sub_a(cpu, v),
             ULA::SbcA => sbc_a(cpu, v),
+            ULA::AND => and(cpu, v),
+            ULA::XOR => xor(cpu, v),
+            ULA::OR => or(cpu, v),
+            ULA::CP => cp(cpu, v),
         },
         None => (),
     }
 }
 
-fn sub_a(cpu: &mut CPU, v: u8) {
-    let a = cpu.regs.a as i16;
-    let result = a - (v as i16);
-    let lookup = ((cpu.regs.a & 0x88) >> 3) | (((v) & 0x88) >> 2) | (((result as u8) & 0x88) >> 1);
-    cpu.regs.a = result as u8;
-
-    cpu.regs.f.S = cpu.regs.a & 0x80 != 0;
-    cpu.regs.f.Z = cpu.regs.a == 0;
-    cpu.regs.f.H = halfcarrySubTable[(lookup & 0x07) as usize];
-    cpu.regs.f.P = overflowSubTable[(lookup >> 4) as usize];
-    cpu.regs.f.N = true;
-    cpu.regs.f.C = ((result) & 0x100) == 0x100;
+fn cp(cpu: &mut CPU, v: u8) {
+    let a = cpu.regs.a as u16;
+    let result = a.wrapping_sub(v as u16);
+    update_flags_ula(cpu, v, result as u16, true);
+    cpu.regs.a = a as u8;
 }
 
-fn sbc_a(cpu: &mut CPU, s: u8) {
-    let mut result = (cpu.regs.a as u16) - (s as u16);
+fn sub_a(cpu: &mut CPU, v: u8) {
+    let a = cpu.regs.a as u16;
+    let result = a.wrapping_sub(v as u16);
+    update_flags_ula(cpu, v, result as u16, true);
+}
+
+fn sbc_a(cpu: &mut CPU, v: u8) {
+    let a = cpu.regs.a as u16;
+    let mut result = a.wrapping_sub(v as u16);
     if cpu.regs.f.C {
-        result -= 1;
+        result = result.wrapping_sub(1);
     }
-    let lookup = ((cpu.regs.a & 0x88) >> 3) | ((s & 0x88) >> 2) | (((result as u8) & 0x88) >> 1);
-    cpu.regs.a = result as u8;
-    cpu.regs.f.S = cpu.regs.a & 0x0080 != 0;
-    cpu.regs.f.Z = cpu.regs.a == 0;
-    cpu.regs.f.H = halfcarrySubTable[(lookup & 0x07) as usize];
-    cpu.regs.f.P = overflowSubTable[(lookup >> 4) as usize];
-    cpu.regs.f.N = true;
-    cpu.regs.f.C = (result & 0x100) == 0x100;
+    update_flags_ula(cpu, v, result, true);
 }
 
 fn adc_a(cpu: &mut CPU, v: u8) {
-    let mut res = (cpu.regs.a as i16) + (v as i16);
+    let a = cpu.regs.a as i16;
+    let mut result = a.wrapping_add(v as i16);
     if cpu.regs.f.C {
-        res += 1;
+        result = result.wrapping_add(1);
     }
-    let lookup = ((cpu.regs.a & 0x88) >> 3) | ((v & 0x88) >> 2) | (((res as u8) & 0x88) >> 1);
-    cpu.regs.a = res as u8;
-    cpu.regs.f.S = cpu.regs.a & 0x80 != 0;
-    cpu.regs.f.Z = cpu.regs.a == 0;
-    cpu.regs.f.H = halfcarryAddTable[(lookup & 0x07) as usize];
-    cpu.regs.f.P = overflowAddTable[(lookup >> 4) as usize];
-    cpu.regs.f.N = false;
-    cpu.regs.f.C = (res & 0x100) == 0x100;
+    update_flags_ula(cpu, v, result as u16, false);
 }
 
 fn add_a(cpu: &mut CPU, v: u8) {
     let a = cpu.regs.a as i16;
-    let result = a + (v as i16);
-    let lookup = ((cpu.regs.a & 0x88) >> 3) | (((v) & 0x88) >> 2) | (((result as u8) & 0x88) >> 1);
-    cpu.regs.a = (result & 0x00ff) as u8;
-
-    cpu.regs.f.S = cpu.regs.a & 0x80 != 0;
-    cpu.regs.f.Z = cpu.regs.a == 0;
-    cpu.regs.f.H = halfcarryAddTable[(lookup & 0x07) as usize];
-    cpu.regs.f.P = overflowAddTable[(lookup >> 4) as usize];
-    cpu.regs.f.N = false;
-    cpu.regs.f.C = ((result) & 0x100) != 0;
+    let result = a.wrapping_add(v as i16);
+    update_flags_ula(cpu, v, result as u16, false);
 }
 
-pub fn subA(cpu: &mut CPU, r: u8) {
-    let a = cpu.regs.a as i16;
-    let result = a - (r as i16);
-    let lookup = ((cpu.regs.a & 0x88) >> 3) | (((r) & 0x88) >> 2) | (((result as u8) & 0x88) >> 1);
-    cpu.regs.a = (result & 0x00ff) as u8;
+fn update_flags_ula(cpu: &mut CPU, v: u8, result: u16, is_subtraction: bool) {
+    let lookup = ((cpu.regs.a & 0x88) >> 3) | ((v & 0x88) >> 2) | ((result as u8) & 0x88) >> 1;
+    let half_carry_table = if is_subtraction {
+        &halfcarrySubTable
+    } else {
+        &halfcarryAddTable
+    };
+    let overflow_table = if is_subtraction {
+        &overflowSubTable
+    } else {
+        &overflowAddTable
+    };
 
-    cpu.regs.f.S = cpu.regs.a & 0x80 != 0;
+    cpu.regs.a = (result & 0x00ff) as u8;
+    cpu.regs.f.S = (cpu.regs.a & 0x80) != 0;
     cpu.regs.f.Z = cpu.regs.a == 0;
-    cpu.regs.f.H = halfcarrySubTable[(lookup & 0x07) as usize];
-    cpu.regs.f.P = overflowSubTable[(lookup >> 4) as usize];
-    cpu.regs.f.N = true;
-    cpu.regs.f.C = ((result) & 0x100) == 0x100;
+    cpu.regs.f.H = half_carry_table[(lookup & 0x07) as usize];
+    cpu.regs.f.P = overflow_table[(lookup >> 4) as usize];
+    cpu.regs.f.N = is_subtraction;
+    cpu.regs.f.C = (result & 0x100) != 0;
+}
+
+fn xor(cpu: &mut CPU, s: u8) {
+    cpu.regs.a ^= s;
+    cpu.regs.f.H = false;
+    update_flags_ula_logic(cpu);
+}
+
+fn and(cpu: &mut CPU, s: u8) {
+    cpu.regs.a &= s;
+    cpu.regs.f.H = true;
+    update_flags_ula_logic(cpu);
+}
+
+fn or(cpu: &mut CPU, s: u8) {
+    cpu.regs.a |= s;
+    cpu.regs.f.H = false;
+    update_flags_ula_logic(cpu);
+}
+
+fn update_flags_ula_logic(cpu: &mut CPU) {
+    cpu.regs.f.S = (cpu.regs.a as i8) < 0;
+    cpu.regs.f.Z = cpu.regs.a == 0;
+    cpu.regs.f.P = parityTable[cpu.regs.a as usize];
+    cpu.regs.f.N = false;
+    cpu.regs.f.C = false;
 }

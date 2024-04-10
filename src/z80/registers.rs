@@ -11,7 +11,7 @@ macro_rules! make_reg_functions {
     };
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum IndexMode {
     Hl,
     Ix,
@@ -226,7 +226,7 @@ impl Registers {
         (self.l, self.l_) = (self.l_, self.l);
     }
 
-    pub(crate) fn set_all_regs(&mut self, registers: [u16; 12]) {
+    pub fn set_all_regs(&mut self, registers: [u16; 12]) {
         self.set_af(registers[0]);
         self.set_bc(registers[1]);
         self.set_de(registers[2]);
@@ -241,7 +241,7 @@ impl Registers {
         self.pc = registers[11];
     }
 
-    pub(crate) fn dump_registers(&self) -> String {
+    pub fn dump_registers(&self) -> String {
         format!(
             "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x}",
             self.af(),
@@ -262,68 +262,68 @@ impl Registers {
 
 #[derive(Copy, Clone)]
 pub struct Flags {
-    pub C: bool,
-    pub N: bool,
-    pub P: bool,
-    pub F3: bool,
-    pub H: bool,
-    pub F5: bool,
-    pub Z: bool,
-    pub S: bool,
+    pub c: bool,
+    pub n: bool,
+    pub p: bool,
+    pub f3: bool,
+    pub h: bool,
+    pub f5: bool,
+    pub z: bool,
+    pub s: bool,
 }
 
 impl Flags {
     pub fn new() -> Self {
         Self {
-            C: false,
-            N: false,
-            P: false,
-            F3: false,
-            H: false,
-            F5: false,
-            Z: false,
-            S: false,
+            c: false,
+            n: false,
+            p: false,
+            f3: false,
+            h: false,
+            f5: false,
+            z: false,
+            s: false,
         }
     }
 
     pub fn get(self) -> u8 {
         let mut res = 0u8;
-        if self.C {
+        if self.c {
             res |= 0b00000001;
         }
-        if self.N {
+        if self.n {
             res |= 0b00000010;
         }
-        if self.P {
+        if self.p {
             res |= 0b00000100;
         }
-        if self.F3 {
+        if self.f3 {
             res |= 0b00001000;
         }
-        if self.H {
+        if self.h {
             res |= 0b00010000;
         }
-        if self.F5 {
+        if self.f5 {
             res |= 0b00100000;
         }
-        if self.Z {
+        if self.z {
             res |= 0b01000000;
         }
-        if self.S {
+        if self.s {
             res |= 0b10000000;
         }
         res
     }
 
     pub fn set(&mut self, b: u8) {
-        self.C = b & 0b00000001 != 0;
-        self.N = b & 0b00000010 != 0;
-        self.P = b & 0b00000100 != 0;
-        self.F3 = b & 0b00001000 != 0;
-        self.H = b & 0b00010000 != 0;
-        self.F5 = b & 0b00100000 != 0;
-        self.Z = b & 0b01000000 != 0;
-        self.S = b & 0b10000000 != 0;
+        self.c = b & 0b00000001 != 0;
+        self.n = b & 0b00000010 != 0;
+        self.p = b & 0b00000100 != 0;
+        self.f3 = b & 0b00001000 != 0;
+        self.h = b & 0b00010000 != 0;
+        self.f5 = b & 0b00100000 != 0;
+        self.z = b & 0b01000000 != 0;
+        self.s = b & 0b10000000 != 0;
     }
 }
 

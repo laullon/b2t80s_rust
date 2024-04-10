@@ -8,8 +8,6 @@ use std::{
 
 use crate::z80::{cpu::SignalReq, cpu::CPU};
 
-use super::registers::Registers;
-
 // use b2t80s_rust::z80::registers::Registers;
 // use b2t80s_rust::z80::{self};
 

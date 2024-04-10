@@ -43,15 +43,15 @@ pub struct Fetched {
 #[derive(Copy, Clone, Debug)]
 pub enum Operation {
     Fetch,
-    MR_PC_N,
-    MW_8(u16, u8),
-    MW_16(u16, u16),
-    MR_ADDR_N(u16),
-    MR_ADDR_R(u16, u8),
+    MrPcN,
+    Mw8(u16, u8),
+    Mw16(u16, u16),
+    MrAddrN(u16),
+    MrAddrR(u16, u8),
     Delay(u8),
-    PW_8(u16, u8),
-    PR_R(u16, u8),
-    MR_PC_D,
+    Pw8(u16, u8),
+    PrR(u16, u8),
+    MrPcD,
 }
 
 impl CPU {
@@ -119,15 +119,15 @@ impl CPU {
             Some(op) => {
                 let done = match op {
                     Operation::Fetch => self.fetch(),
-                    Operation::MR_PC_N => self.mr(),
-                    Operation::MR_PC_D => self.mr_d(),
-                    Operation::MW_8(addr, data) => self.mw_8(addr, data),
-                    Operation::MW_16(addr, data) => self.mw_16(addr, data),
-                    Operation::MR_ADDR_N(addr) => self.mr_addr_n(addr),
-                    Operation::MR_ADDR_R(addr, r) => self.mr_addr_r(addr, r),
+                    Operation::MrPcN => self.mr(),
+                    Operation::MrPcD => self.mr_d(),
+                    Operation::Mw8(addr, data) => self.mw_8(addr, data),
+                    Operation::Mw16(addr, data) => self.mw_16(addr, data),
+                    Operation::MrAddrN(addr) => self.mr_addr_n(addr),
+                    Operation::MrAddrR(addr, r) => self.mr_addr_r(addr, r),
                     Operation::Delay(delay) => self.delay(delay),
-                    Operation::PW_8(addr, data) => self.pw_8(addr, data),
-                    Operation::PR_R(addr, r) => self.pr_r(addr, r),
+                    Operation::Pw8(addr, data) => self.pw_8(addr, data),
+                    Operation::PrR(addr, r) => self.pr_r(addr, r),
                 };
                 if done {
                     println!("{} {:?}", self.current_ops_ts, self.current_ops);
@@ -181,8 +181,7 @@ impl CPU {
         let mut v = None;
         match (z, self.fetched.n) {
             (6, None) => {
-                self.scheduler
-                    .push(Operation::MR_ADDR_N(self.regs.get_rr(2)));
+                self.scheduler.push(Operation::MrAddrN(self.regs.get_rr(2)));
                 self.scheduler.push(Operation::Delay(1));
             }
             (6, Some(n)) => v = Some(n),
@@ -193,14 +192,14 @@ impl CPU {
         let mut r = None;
         match (x, v) {
             (1, Some(v)) => _ = bit(self, y, v),
-            (2, Some(v)) => r = Some(res(self, y, v)),
-            (3, Some(v)) => r = Some(set(self, y, v)),
+            (2, Some(v)) => r = Some(res(y, v)),
+            (3, Some(v)) => r = Some(set(y, v)),
             _ => (),
         }
 
         match (z, r) {
             (6, Some(r)) => {
-                self.scheduler.push(Operation::MW_8(self.regs.get_rr(2), r));
+                self.scheduler.push(Operation::Mw8(self.regs.get_rr(2), r));
             }
             (_, Some(r)) => {
                 self.regs.set_r(z, r);
@@ -212,9 +211,7 @@ impl CPU {
     fn rot(&mut self, y: u8, z: u8) {
         let mut v = None;
         match (z, self.fetched.n) {
-            (6, None) => self
-                .scheduler
-                .push(Operation::MR_ADDR_N(self.regs.get_rr(2))),
+            (6, None) => self.scheduler.push(Operation::MrAddrN(self.regs.get_rr(2))),
             (6, Some(n)) => v = Some(n),
             (_, None) => v = Some(self.regs.get_r(z)),
             _ => unreachable!("Invalid rot instruction (r)"),
@@ -237,7 +234,7 @@ impl CPU {
             (6, Some(r)) => {
                 self.fetched.op_code = None;
                 self.scheduler.push(Operation::Delay(1));
-                self.scheduler.push(Operation::MW_8(self.regs.get_rr(2), r))
+                self.scheduler.push(Operation::Mw8(self.regs.get_rr(2), r))
             }
             (_, Some(r)) => self.regs.set_r(z, r),
             _ => (),
@@ -252,11 +249,11 @@ impl CPU {
                     ret(self)
                 }
             }
-            1 => self.x3_z1_ops(y, q, p),
+            1 => self.x3_z1_ops(q, p),
             2 => jp(self, Some(y)),
             3 => self.x3_z3_ops(y),
             4 => call(self, Some(y)),
-            5 => self.x3_z5_ops(y, q, p),
+            5 => self.x3_z5_ops(q, p),
             6 => alu(self, 3, y, z),
             7 => rst(self, y),
             _ => unreachable!("Invalid x3 instruction"),
@@ -267,13 +264,13 @@ impl CPU {
         match y {
             0 => jp(self, None),
             1 => self.scheduler.push(Operation::Fetch),
-            2 => outNa(self),
-            3 => inNa(self),
+            2 => out_na(self),
+            3 => in_na(self),
             _ => unreachable!("Invalid x3_z3 instruction"),
         }
     }
 
-    fn x3_z5_ops(&mut self, y: u8, q: u8, p: u8) {
+    fn x3_z5_ops(&mut self, q: u8, p: u8) {
         match (q, p) {
             (0, _) => push(self, p),
             (1, 0) => call(self, None),
@@ -282,7 +279,7 @@ impl CPU {
         }
     }
 
-    fn x3_z1_ops(&mut self, y: u8, q: u8, p: u8) {
+    fn x3_z1_ops(&mut self, q: u8, p: u8) {
         match (q, p) {
             (0, _) => pop(self, p),
             (1, 0) => ret(self),
@@ -293,14 +290,14 @@ impl CPU {
 
     pub fn if_cc(&self, y: u8) -> bool {
         match y {
-            0 => self.regs.f.Z == false,
-            1 => self.regs.f.Z == true,
-            2 => self.regs.f.C == false,
-            3 => self.regs.f.C == true,
-            4 => self.regs.f.P == false,
-            5 => self.regs.f.P == true,
-            6 => self.regs.f.N == false,
-            7 => self.regs.f.C == true,
+            0 => self.regs.f.z == false,
+            1 => self.regs.f.z == true,
+            2 => self.regs.f.c == false,
+            3 => self.regs.f.c == true,
+            4 => self.regs.f.p == false,
+            5 => self.regs.f.p == true,
+            6 => self.regs.f.n == false,
+            7 => self.regs.f.c == true,
             _ => unreachable!(),
         }
     }
@@ -338,7 +335,7 @@ impl CPU {
             0 => (), // NOP
             1 => self.regs.exafaf(),
             2..=7 => match self.fetched.n {
-                None => self.scheduler.push(Operation::MR_PC_N),
+                None => self.scheduler.push(Operation::MrPcN),
                 Some(_) => {
                     let mut jump = true;
                     match y {
@@ -347,10 +344,10 @@ impl CPU {
                             jump = self.regs.b != 0
                         }
                         3 => {}
-                        4 => jump = self.regs.f.Z == false,
-                        5 => jump = self.regs.f.Z == true,
-                        6 => jump = self.regs.f.C == false,
-                        7 => jump = self.regs.f.C == true,
+                        4 => jump = self.regs.f.z == false,
+                        5 => jump = self.regs.f.z == true,
+                        6 => jump = self.regs.f.c == false,
+                        7 => jump = self.regs.f.c == true,
                         _ => panic!(),
                     }
                     if jump {
@@ -392,25 +389,25 @@ impl CPU {
             0 => match p {
                 0 | 1 => {
                     self.scheduler
-                        .push(Operation::MW_8(self.regs.get_rr(p), self.regs.a));
+                        .push(Operation::Mw8(self.regs.get_rr(p), self.regs.a));
                 }
                 2 => match self.fetched.nn {
                     None => {
-                        self.scheduler.push(Operation::MR_PC_N);
-                        self.scheduler.push(Operation::MR_PC_N);
+                        self.scheduler.push(Operation::MrPcN);
+                        self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
                         self.scheduler
-                            .push(Operation::MW_16(nn, self.regs.get_rr(p)));
+                            .push(Operation::Mw16(nn, self.regs.get_rr(p)));
                     }
                 },
                 3 => match self.fetched.nn {
                     None => {
-                        self.scheduler.push(Operation::MR_PC_N);
-                        self.scheduler.push(Operation::MR_PC_N);
+                        self.scheduler.push(Operation::MrPcN);
+                        self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
-                        self.scheduler.push(Operation::MW_8(nn, self.regs.a));
+                        self.scheduler.push(Operation::Mw8(nn, self.regs.a));
                     }
                 },
                 _ => panic!("x0_z2_ops q:{} p:{}", q, p),
@@ -418,30 +415,29 @@ impl CPU {
             1 => match p {
                 0 | 1 => match self.fetched.n {
                     None => {
-                        self.scheduler
-                            .push(Operation::MR_ADDR_N(self.regs.get_rr(p)));
+                        self.scheduler.push(Operation::MrAddrN(self.regs.get_rr(p)));
                     }
                     Some(n) => self.regs.a = n,
                 },
                 2 => match self.fetched.nn {
                     None => {
-                        self.scheduler.push(Operation::MR_PC_N);
-                        self.scheduler.push(Operation::MR_PC_N);
+                        self.scheduler.push(Operation::MrPcN);
+                        self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
                         self.fetched.op_code = None;
-                        self.scheduler.push(Operation::MR_ADDR_R(nn, 5));
-                        self.scheduler.push(Operation::MR_ADDR_R(nn + 1, 4));
+                        self.scheduler.push(Operation::MrAddrR(nn, 5));
+                        self.scheduler.push(Operation::MrAddrR(nn + 1, 4));
                     }
                 },
                 3 => match self.fetched.nn {
                     None => {
-                        self.scheduler.push(Operation::MR_PC_N);
-                        self.scheduler.push(Operation::MR_PC_N);
+                        self.scheduler.push(Operation::MrPcN);
+                        self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
                         self.fetched.op_code = None;
-                        self.scheduler.push(Operation::MR_ADDR_R(nn, 7));
+                        self.scheduler.push(Operation::MrAddrR(nn, 7));
                     }
                 },
                 _ => panic!("x0_z2_ops q:{} p:{}", q, p),

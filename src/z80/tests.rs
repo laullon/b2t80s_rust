@@ -45,7 +45,7 @@ fn test_opcodes() {
     let results = read_tests(path.join("tests.out"));
     assert_eq!(tests.len(), results.len());
 
-    for t in 0..0x100 {
+    for t in 0..results.len() {
         let test = &tests[t];
         let result = &results[t];
         let mut mem = [0 as u8; 0x010000];
@@ -61,18 +61,7 @@ fn test_opcodes() {
 
         let mut cpu = CPU::new();
 
-        cpu.regs.set_af(test.registers[0]);
-        cpu.regs.set_bc(test.registers[1]);
-        cpu.regs.set_de(test.registers[2]);
-        cpu.regs.set_hl(test.registers[3]);
-        cpu.regs.set_af_aux(test.registers[4]);
-        cpu.regs.set_bc_aux(test.registers[5]);
-        cpu.regs.set_de_aux(test.registers[6]);
-        cpu.regs.set_hl_aux(test.registers[7]);
-        cpu.regs.ix = test.registers[8];
-        cpu.regs.iy = test.registers[9];
-        cpu.regs.sp = test.registers[10];
-        cpu.regs.pc = test.registers[11];
+        cpu.regs.set_all_regs(test.registers);
 
         for _ in 0..result.aux_rgs.ts {
             match cpu.signals.mem {
@@ -86,10 +75,20 @@ fn test_opcodes() {
                 }
                 SignalReq::None => (),
             }
+            match cpu.signals.port {
+                SignalReq::Read => {
+                    cpu.signals.data = cpu.signals.addr as u8;
+                    println!("    PR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                }
+                SignalReq::Write => {
+                    println!("    PW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                }
+                SignalReq::None => (),
+            }
             cpu.tick();
         }
         println!("------------");
-        let cpu_regs = dump_registers(cpu.regs);
+        let cpu_regs = cpu.regs.dump_registers();
         let res_regs = result.registers.map(|d| format!("{:04x}", d)).join(" ");
         let cpu_f = format!("{:08b}", cpu.regs.f.get());
         let res_f = format!("{:08b}", result.registers[0] as u8);
@@ -101,24 +100,6 @@ fn test_opcodes() {
         }
         println!("------------\n");
     }
-}
-
-fn dump_registers(regs: Registers) -> String {
-    format!(
-        "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x}",
-        regs.af(),
-        regs.bc(),
-        regs.de(),
-        regs.hl(),
-        regs.af_aux(),
-        regs.bc_aux(),
-        regs.de_aux(),
-        regs.hl_aux(),
-        regs.ix,
-        regs.iy,
-        regs.sp,
-        regs.pc,
-    )
 }
 
 fn read_tests(path: PathBuf) -> Vec<TestDefinition> {

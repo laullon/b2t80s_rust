@@ -1,11 +1,11 @@
-use super::cpu::CPU;
+use super::{cpu::CPU, registers::IndexMode};
 use crate::z80::cpu::Operation;
 
 const overflowAddTable: [bool; 8] = [false, false, false, true, true, false, false, false];
 const overflowSubTable: [bool; 8] = [false, true, false, false, false, false, true, false];
 const halfcarryAddTable: [bool; 8] = [false, true, true, true, false, false, false, true];
 const halfcarrySubTable: [bool; 8] = [false, false, true, false, true, false, true, true];
-const parityTable: [bool; 256] = [
+pub const parityTable: [bool; 256] = [
     true, false, false, true, false, true, true, false, false, true, true, false, true, false,
     false, true, false, true, true, false, true, false, false, true, true, false, false, true,
     false, true, true, false, false, true, true, false, true, false, false, true, true, false,
@@ -29,17 +29,12 @@ const parityTable: [bool; 256] = [
 
 pub fn ld_rr_mm(cpu: &mut CPU, r: u8) {
     match cpu.fetched.nn {
-        Some(v) => cpu.regs.set_rr(r, v, false),
+        Some(v) => cpu.regs.set_rr(r, v),
         None => {
             cpu.scheduler.push(Operation::MR_PC_N);
             cpu.scheduler.push(Operation::MR_PC_N);
         }
     }
-}
-
-pub fn exafaf(cpu: &mut CPU) {
-    (cpu.regs.a, cpu.regs.a_) = (cpu.regs.a_, cpu.regs.a);
-    (cpu.regs.f, cpu.regs.f_) = (cpu.regs.f_, cpu.regs.f);
 }
 
 pub fn halt(cpu: &mut CPU) {
@@ -52,7 +47,7 @@ pub fn ld_r_n(cpu: &mut CPU, y: u8) {
         None => cpu.scheduler.push(Operation::MR_PC_N),
         Some(v) => match y {
             6 => {
-                cpu.scheduler.push(Operation::MW_8(cpu.regs.hl(), v));
+                cpu.scheduler.push(Operation::MW_8(cpu.regs.get_rr(2), v));
             }
             _ => cpu.regs.set_r(y, v),
         },
@@ -63,10 +58,10 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
     match (y, z) {
         (6, _) => {
             cpu.scheduler
-                .push(Operation::MW_8(cpu.regs.hl(), cpu.regs.get_r(z)));
+                .push(Operation::MW_8(cpu.regs.get_rr(2), cpu.regs.get_r(z)));
         }
         (_, 6) => match cpu.fetched.n {
-            None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.hl())),
+            None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.get_rr(2))),
             Some(n) => cpu.regs.set_r(y, n),
         },
         _ => {
@@ -77,28 +72,62 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
 }
 
 pub fn inc_rr(cpu: &mut CPU, p: u8) {
-    let v = cpu.regs.get_rp(p, false) + 1;
-    cpu.regs.set_rr(p, v, false);
+    let v = cpu.regs.get_rr(p) + 1;
+    cpu.regs.set_rr(p, v);
 }
 
 pub fn dec_rr(cpu: &mut CPU, p: u8) {
-    let v = cpu.regs.get_rp(p, false).wrapping_sub(1);
-    cpu.regs.set_rr(p, v, false);
+    let v = cpu.regs.get_rr(p).wrapping_sub(1);
+    cpu.regs.set_rr(p, v);
+}
+
+pub fn dec_r(cpu: &mut CPU, r: u8) {
+    inc_dec_r(cpu, r, false);
 }
 
 pub fn inc_r(cpu: &mut CPU, r: u8) {
-    match r {
-        6 => match cpu.fetched.n {
-            None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.hl())),
-            Some(n) => {
-                let v = inc(cpu, n);
+    inc_dec_r(cpu, r, true);
+}
 
-                cpu.scheduler.push(Operation::MW_8(cpu.regs.hl(), v));
+fn inc_dec_r(cpu: &mut CPU, r: u8, is_inc: bool) {
+    match (r, cpu.regs.index_mode) {
+        (6, IndexMode::Hl) => match cpu.fetched.n {
+            None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.get_rr(2))),
+            Some(n) => {
+                let mut v = n;
+                if is_inc {
+                    v = inc(cpu, v);
+                } else {
+                    v = dec(cpu, v);
+                }
+                cpu.scheduler.push(Operation::MW_8(cpu.regs.get_rr(2), v));
             }
+        },
+        (6, _) => match (cpu.fetched.n, cpu.fetched.d) {
+            (None, None) => cpu.scheduler.push(Operation::MR_PC_D),
+            (None, Some(d)) => cpu
+                .scheduler
+                .push(Operation::MR_ADDR_N(cpu.regs.get_idx(d))),
+            (Some(n), Some(d)) => {
+                let mut v = n;
+                if is_inc {
+                    v = inc(cpu, v);
+                } else {
+                    v = dec(cpu, v);
+                }
+
+                cpu.scheduler.push(Operation::MW_8(cpu.regs.get_idx(d), v));
+                cpu.scheduler.push(Operation::Delay(6));
+            }
+            _ => unreachable!("Invalid inc_r instruction"),
         },
         _ => {
             let mut v = cpu.regs.get_r(r);
-            v = inc(cpu, v);
+            if is_inc {
+                v = inc(cpu, v);
+            } else {
+                v = dec(cpu, v);
+            }
             cpu.regs.set_r(r, v);
         }
     }
@@ -112,24 +141,6 @@ pub fn inc(cpu: &mut CPU, v: u8) -> u8 {
     cpu.regs.f.P = r == 0x80;
     cpu.regs.f.N = false;
     r
-}
-
-pub fn dec_r(cpu: &mut CPU, r: u8) {
-    match r {
-        6 => match cpu.fetched.n {
-            None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.hl())),
-            Some(n) => {
-                let v = dec(cpu, n);
-
-                cpu.scheduler.push(Operation::MW_8(cpu.regs.hl(), v));
-            }
-        },
-        _ => {
-            let mut v = cpu.regs.get_r(r);
-            v = dec(cpu, v);
-            cpu.regs.set_r(r, v);
-        }
-    }
 }
 
 pub fn dec(cpu: &mut CPU, v: u8) -> u8 {
@@ -182,12 +193,12 @@ pub fn add_hl_rr(cpu: &mut CPU, p: u8) {
     // rIdx := cpu.fetched.opCode >> 4 & 0b11
     // reg := cpu.getRRptr(rIdx)
 
-    let v = cpu.regs.get_rp(p, false);
-    let hl = cpu.regs.hl();
+    let v = cpu.regs.get_rr(p);
+    let hl = cpu.regs.get_rr(2);
     let result = (hl as u32) + (v as u32);
     let lookup =
         (((hl & 0x0800) >> 11) | ((v & 0x0800) >> 10) | (((result as u16) & 0x0800) >> 9)) as u8;
-    cpu.regs.set_hl(result as u16);
+    cpu.regs.set_rr(2, result as u16);
 
     cpu.regs.f.N = false;
     cpu.regs.f.H = halfcarryAddTable[lookup as usize];
@@ -235,36 +246,30 @@ pub fn ccf(cpu: &mut CPU) {
     cpu.regs.f.C = !cpu.regs.f.C;
 }
 
-pub enum ULA {
-    AddA,
-    AdcA,
-    Sub,
-    SbcA,
-    OR,
-    XOR,
-    AND,
-    CP,
-}
-
-pub fn ula(cpu: &mut CPU, f: ULA, r: u8) {
+pub fn alu(cpu: &mut CPU, x: u8, y: u8, z: u8) {
     let mut v: Option<u8> = None;
-    match r {
-        6 => match cpu.fetched.n {
-            None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.hl())),
+    match (x, z) {
+        (2, 6) => match cpu.fetched.n {
+            None => cpu.scheduler.push(Operation::MR_ADDR_N(cpu.regs.get_rr(2))),
             Some(n) => v = Some(n),
         },
-        _ => v = Some(cpu.regs.get_r(r)),
+        (3, 6) => match cpu.fetched.n {
+            None => cpu.scheduler.push(Operation::MR_PC_N),
+            Some(n) => v = Some(n),
+        },
+        _ => v = Some(cpu.regs.get_r(z)),
     }
     match v {
-        Some(v) => match f {
-            ULA::AddA => add_a(cpu, v),
-            ULA::AdcA => adc_a(cpu, v),
-            ULA::Sub => sub_a(cpu, v),
-            ULA::SbcA => sbc_a(cpu, v),
-            ULA::AND => and(cpu, v),
-            ULA::XOR => xor(cpu, v),
-            ULA::OR => or(cpu, v),
-            ULA::CP => cp(cpu, v),
+        Some(v) => match y {
+            0 => add_a(cpu, v),
+            1 => adc_a(cpu, v),
+            2 => sub_a(cpu, v),
+            3 => sbc_a(cpu, v),
+            4 => and(cpu, v),
+            5 => xor(cpu, v),
+            6 => or(cpu, v),
+            7 => cp(cpu, v),
+            _ => unreachable!("Invalid ALU instruction"),
         },
         None => (),
     }
@@ -416,7 +421,7 @@ pub fn push(cpu: &mut CPU, r: u8) {
     cpu.regs.sp = cpu.regs.sp.wrapping_sub(2);
     cpu.scheduler.push(Operation::Delay(1));
     cpu.scheduler
-        .push(Operation::MW_16(cpu.regs.sp, cpu.regs.get_rp(r, true)));
+        .push(Operation::MW_16(cpu.regs.sp, cpu.regs.get_rr2(r)));
 }
 
 pub fn pop(cpu: &mut CPU, r: u8) {
@@ -427,7 +432,138 @@ pub fn pop(cpu: &mut CPU, r: u8) {
         }
         Some(nn) => {
             cpu.regs.sp = cpu.regs.sp.wrapping_add(2);
-            cpu.regs.set_rr(r, nn, true);
+            cpu.regs.set_rr2(r, nn);
+        }
+    }
+}
+
+pub fn rst(cpu: &mut CPU, y: u8) {
+    cpu.fetched.op_code = None;
+    cpu.regs.sp = cpu.regs.sp.wrapping_sub(2);
+    cpu.scheduler.push(Operation::Delay(1));
+    cpu.scheduler
+        .push(Operation::MW_16(cpu.regs.sp, cpu.regs.pc));
+    cpu.regs.pc = (y * 8) as u16;
+}
+
+fn set_flags_rot(cpu: &mut CPU, res: u8) {
+    cpu.regs.f.Z = res == 0;
+    cpu.regs.f.N = false;
+    cpu.regs.f.H = false;
+    cpu.regs.f.S = res & 0x80 != 0;
+    cpu.regs.f.P = parityTable[res as usize];
+}
+
+pub fn rlc(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = (v << 1) | (v >> 7);
+    cpu.regs.f.C = (v & 0b10000000) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn rrc(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = (v >> 1) | (v << 7);
+    cpu.regs.f.C = (v & 0b00000001) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn rl(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = (v << 1) | cpu.regs.f.C as u8;
+    cpu.regs.f.C = (v & 0b10000000) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn rr(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = (v >> 1) | ((cpu.regs.f.C as u8) << 7);
+    cpu.regs.f.C = (v & 0b00000001) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn sla(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = v << 1;
+    cpu.regs.f.C = (v & 0b10000000) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn sra(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = (v >> 1) | (v & 0b10000000);
+    cpu.regs.f.C = (v & 0b00000001) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn sll(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = (v << 1) | 1;
+    cpu.regs.f.C = (v & 0b10000000) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn srl(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
+    let res = v >> 1;
+    cpu.regs.f.C = (v & 0b00000001) != 0;
+    set_flags_rot(cpu, res);
+    res
+}
+
+pub fn bit(cpu: &mut CPU, y: u8, v: u8) -> u8 {
+    let bit = y as u8;
+    let v = v & 1 << bit;
+    cpu.regs.f.N = false;
+    cpu.regs.f.H = true;
+    cpu.regs.f.P = parityTable[v as usize];
+    cpu.regs.f.Z = (v & (1 << bit)) == 0;
+    cpu.regs.f.S = v & 0x0080 != 0;
+    v
+}
+
+pub fn res(cpu: &mut CPU, y: u8, v: u8) -> u8 {
+    let bit = y as u8;
+    let b = 1 << bit;
+    v & (!b)
+}
+
+pub fn set(cpu: &mut CPU, y: u8, v: u8) -> u8 {
+    let bit = y as u8;
+    let b = 1 << bit;
+    v | b
+}
+
+pub fn outNa(cpu: &mut CPU) {
+    match cpu.fetched.n {
+        None => cpu.scheduler.push(Operation::MR_PC_N),
+        Some(n) => {
+            let port = (n as u16) << 8 | cpu.regs.a as u16;
+            cpu.scheduler.push(Operation::Delay(1));
+            cpu.scheduler.push(Operation::PW_8(port, cpu.regs.a));
+            cpu.fetched.op_code = None;
+        }
+    }
+}
+
+// func inAn(cpu *z80) {
+// 	inAn_f = cpu.regs.F.GetByte()
+// 	port := toWord(cpu.fetched.n, cpu.regs.A)
+// 	cpu.scheduler.append(&in{from: port, f: inAn_m1})
+// }
+
+// func inAn_m1(cpu *z80, data uint8) {
+// 	cpu.regs.A = data
+// 	cpu.regs.F.SetByte(inAn_f)
+// }
+
+pub fn inNa(cpu: &mut CPU) {
+    match cpu.fetched.n {
+        None => cpu.scheduler.push(Operation::MR_PC_N),
+        Some(n) => {
+            let port = (n as u16) << 8 | cpu.regs.a as u16;
+            cpu.scheduler.push(Operation::Delay(1));
+            cpu.scheduler.push(Operation::PR_R(port, 7));
+            cpu.fetched.op_code = None;
         }
     }
 }

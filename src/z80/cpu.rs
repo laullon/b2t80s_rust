@@ -1,4 +1,7 @@
-use super::{ops_codes::*, registers::Registers};
+use super::{
+    ops_codes::*,
+    registers::{IndexMode, Registers},
+};
 
 pub fn hello() -> String {
     "Hello!".to_string()
@@ -34,10 +37,10 @@ pub struct Fetched {
     prefix: u16,
     pub n: Option<u8>,
     pub nn: Option<u16>,
-    // op: Option<&'a OpCode<T, O>>,
+    pub d: Option<u8>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Operation {
     Fetch,
     MR_PC_N,
@@ -46,6 +49,9 @@ pub enum Operation {
     MR_ADDR_N(u16),
     MR_ADDR_R(u16, u8),
     Delay(u8),
+    PW_8(u16, u8),
+    PR_R(u16, u8),
+    MR_PC_D,
 }
 
 impl CPU {
@@ -63,6 +69,7 @@ impl CPU {
                 prefix: 0,
                 n: None,
                 nn: None,
+                d: None,
             },
             scheduler: Vec::new(),
             wait: false,
@@ -96,6 +103,10 @@ impl CPU {
                 if self.do_interrupt {
                     self.exec_interrupt()
                 } else {
+                    self.fetched.op_code = None;
+                    self.fetched.n = None;
+                    self.fetched.nn = None;
+                    self.fetched.d = None;
                     self.current_ops = Some(Operation::Fetch);
                 }
             } else {
@@ -107,15 +118,19 @@ impl CPU {
         match c {
             Some(op) => {
                 let done = match op {
-                    Operation::Fetch => self.fectch(),
+                    Operation::Fetch => self.fetch(),
                     Operation::MR_PC_N => self.mr(),
+                    Operation::MR_PC_D => self.mr_d(),
                     Operation::MW_8(addr, data) => self.mw_8(addr, data),
                     Operation::MW_16(addr, data) => self.mw_16(addr, data),
                     Operation::MR_ADDR_N(addr) => self.mr_addr_n(addr),
                     Operation::MR_ADDR_R(addr, r) => self.mr_addr_r(addr, r),
                     Operation::Delay(delay) => self.delay(delay),
+                    Operation::PW_8(addr, data) => self.pw_8(addr, data),
+                    Operation::PR_R(addr, r) => self.pr_r(addr, r),
                 };
                 if done {
+                    println!("{} {:?}", self.current_ops_ts, self.current_ops);
                     self.current_ops = None;
                     self.current_ops_ts = 0;
                     if self.scheduler.is_empty() {
@@ -138,17 +153,94 @@ impl CPU {
         let p = y >> 1;
         let q = y & 0b00000001;
 
-        #[allow(clippy::print_stdout)]
         println!(
-            "opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
-            op_code, x, y, z, p, q
+            "pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
+            self.fetched.prefix, op_code, x, y, z, p, q
         );
-        match x {
-            0 => self.x0_ops(z, y, q, p),
-            1 => self.x1_ops(y, z),
-            2 => self.alu(y, z),
-            3 => self.x3_ops(z, y, q, p),
+        match (self.fetched.prefix, x) {
+            (0 | 0xdd, 0) => self.x0_ops(z, y, q, p),
+            (0 | 0xdd, 1) => self.x1_ops(y, z),
+            (0 | 0xdd, 2) => alu(self, x, y, z),
+            (0 | 0xdd, 3) => self.x3_ops(z, y, q, p),
+            (0xcb, _) => self.cb_ops(x, y, z),
             _ => todo!("decode_and_run x:{}", x),
+        }
+    }
+
+    fn cb_ops(&mut self, x: u8, y: u8, z: u8) {
+        match x {
+            0 => self.rot(y, z),
+            1 => self.bit_ops(x, y, z),
+            2 => self.bit_ops(x, y, z),
+            3 => self.bit_ops(x, y, z),
+            _ => unreachable!("Invalid cb instruction"),
+        }
+    }
+
+    fn bit_ops(&mut self, x: u8, y: u8, z: u8) {
+        let mut v = None;
+        match (z, self.fetched.n) {
+            (6, None) => {
+                self.scheduler
+                    .push(Operation::MR_ADDR_N(self.regs.get_rr(2)));
+                self.scheduler.push(Operation::Delay(1));
+            }
+            (6, Some(n)) => v = Some(n),
+            (_, None) => v = Some(self.regs.get_r(z)),
+            _ => unreachable!("Invalid bit instruction (r)"),
+        }
+
+        let mut r = None;
+        match (x, v) {
+            (1, Some(v)) => _ = bit(self, y, v),
+            (2, Some(v)) => r = Some(res(self, y, v)),
+            (3, Some(v)) => r = Some(set(self, y, v)),
+            _ => (),
+        }
+
+        match (z, r) {
+            (6, Some(r)) => {
+                self.scheduler.push(Operation::MW_8(self.regs.get_rr(2), r));
+            }
+            (_, Some(r)) => {
+                self.regs.set_r(z, r);
+            }
+            _ => (),
+        }
+    }
+
+    fn rot(&mut self, y: u8, z: u8) {
+        let mut v = None;
+        match (z, self.fetched.n) {
+            (6, None) => self
+                .scheduler
+                .push(Operation::MR_ADDR_N(self.regs.get_rr(2))),
+            (6, Some(n)) => v = Some(n),
+            (_, None) => v = Some(self.regs.get_r(z)),
+            _ => unreachable!("Invalid rot instruction (r)"),
+        }
+
+        let mut res = None;
+        match (y, v) {
+            (0, Some(v)) => res = Some(rlc(self, z, v)),
+            (1, Some(v)) => res = Some(rrc(self, z, v)),
+            (2, Some(v)) => res = Some(rl(self, z, v)),
+            (3, Some(v)) => res = Some(rr(self, z, v)),
+            (4, Some(v)) => res = Some(sla(self, z, v)),
+            (5, Some(v)) => res = Some(sra(self, z, v)),
+            (6, Some(v)) => res = Some(sll(self, z, v)),
+            (7, Some(v)) => res = Some(srl(self, z, v)),
+            (_, None) => (),
+            _ => unreachable!("Invalid rot instruction"),
+        }
+        match (z, res) {
+            (6, Some(r)) => {
+                self.fetched.op_code = None;
+                self.scheduler.push(Operation::Delay(1));
+                self.scheduler.push(Operation::MW_8(self.regs.get_rr(2), r))
+            }
+            (_, Some(r)) => self.regs.set_r(z, r),
+            _ => (),
         }
     }
 
@@ -162,16 +254,30 @@ impl CPU {
             }
             1 => self.x3_z1_ops(y, q, p),
             2 => jp(self, Some(y)),
-            3 => jp(self, None),
+            3 => self.x3_z3_ops(y),
             4 => call(self, Some(y)),
             5 => self.x3_z5_ops(y, q, p),
-            _ => unreachable!(),
+            6 => alu(self, 3, y, z),
+            7 => rst(self, y),
+            _ => unreachable!("Invalid x3 instruction"),
+        }
+    }
+
+    fn x3_z3_ops(&mut self, y: u8) {
+        match y {
+            0 => jp(self, None),
+            1 => self.scheduler.push(Operation::Fetch),
+            2 => outNa(self),
+            3 => inNa(self),
+            _ => unreachable!("Invalid x3_z3 instruction"),
         }
     }
 
     fn x3_z5_ops(&mut self, y: u8, q: u8, p: u8) {
         match (q, p) {
             (0, _) => push(self, p),
+            (1, 0) => call(self, None),
+            (1, 1) => self.scheduler.push(Operation::Fetch),
             _ => unreachable!(),
         }
     }
@@ -179,7 +285,9 @@ impl CPU {
     fn x3_z1_ops(&mut self, y: u8, q: u8, p: u8) {
         match (q, p) {
             (0, _) => pop(self, p),
-            _ => unreachable!(),
+            (1, 0) => ret(self),
+            (1, 1) => self.regs.exx(),
+            _ => unreachable!("Invalid x3_z1 instruction"),
         }
     }
 
@@ -228,7 +336,7 @@ impl CPU {
     fn x0_z0_ops(&mut self, y: u8) {
         match y {
             0 => (), // NOP
-            1 => exafaf(self),
+            1 => self.regs.exafaf(),
             2..=7 => match self.fetched.n {
                 None => self.scheduler.push(Operation::MR_PC_N),
                 Some(_) => {
@@ -260,20 +368,6 @@ impl CPU {
         }
     }
 
-    fn alu(&mut self, y: u8, z: u8) {
-        match y {
-            0 => ula(self, ULA::AddA, z),
-            1 => ula(self, ULA::AdcA, z),
-            2 => ula(self, ULA::Sub, z),
-            3 => ula(self, ULA::SbcA, z),
-            4 => ula(self, ULA::AND, z),
-            5 => ula(self, ULA::XOR, z),
-            6 => ula(self, ULA::OR, z),
-            7 => ula(self, ULA::CP, z),
-            _ => panic!("alu y:{}", y),
-        }
-    }
-
     fn x1_ops(&mut self, y: u8, z: u8) {
         match (y, z) {
             (6, 6) => halt(self),
@@ -296,13 +390,9 @@ impl CPU {
     fn x0_z2_ops(&mut self, q: u8, p: u8) {
         match q {
             0 => match p {
-                0 => {
+                0 | 1 => {
                     self.scheduler
-                        .push(Operation::MW_8(self.regs.bc(), self.regs.a));
-                }
-                1 => {
-                    self.scheduler
-                        .push(Operation::MW_8(self.regs.de(), self.regs.a));
+                        .push(Operation::MW_8(self.regs.get_rr(p), self.regs.a));
                 }
                 2 => match self.fetched.nn {
                     None => {
@@ -310,7 +400,8 @@ impl CPU {
                         self.scheduler.push(Operation::MR_PC_N);
                     }
                     Some(nn) => {
-                        self.scheduler.push(Operation::MW_16(nn, self.regs.hl()));
+                        self.scheduler
+                            .push(Operation::MW_16(nn, self.regs.get_rr(p)));
                     }
                 },
                 3 => match self.fetched.nn {
@@ -325,15 +416,10 @@ impl CPU {
                 _ => panic!("x0_z2_ops q:{} p:{}", q, p),
             },
             1 => match p {
-                0 => match self.fetched.n {
+                0 | 1 => match self.fetched.n {
                     None => {
-                        self.scheduler.push(Operation::MR_ADDR_N(self.regs.bc()));
-                    }
-                    Some(n) => self.regs.a = n,
-                },
-                1 => match self.fetched.n {
-                    None => {
-                        self.scheduler.push(Operation::MR_ADDR_N(self.regs.de()));
+                        self.scheduler
+                            .push(Operation::MR_ADDR_N(self.regs.get_rr(p)));
                     }
                     Some(n) => self.regs.a = n,
                 },
@@ -382,16 +468,11 @@ impl CPU {
     //     todo!()
     // }
 
-    fn fectch(self: &mut Self) -> bool {
+    fn fetch(self: &mut Self) -> bool {
         self.current_ops_ts += 1;
         // println!("> [fetch] {}", self.current_ops_ts);
-        // println("> [fetch]", ops.t, "pc:", fmt.Sprintf("0x%04X", cpu.regs.PC))
         match self.current_ops_ts {
             1 => {
-                self.fetched.n = None;
-                self.fetched.nn = None;
-                self.fetched.op_code = None;
-
                 self.regs.m1 = true;
                 self.signals.addr = self.regs.pc;
                 self.signals.mem = SignalReq::Read;
@@ -401,9 +482,19 @@ impl CPU {
             2 => {
                 self.regs.m1 = false;
                 self.signals.mem = SignalReq::None;
-                // self.fetched.prefix = self.fetched.prefix << 8;
-                // self.fetched.prefix |= self.fetched.op_code as u16;
+                match self.fetched.op_code {
+                    Some(opc) => {
+                        self.fetched.prefix = self.fetched.prefix << 8;
+                        self.fetched.prefix |= opc as u16;
+                    }
+                    None => (),
+                }
                 self.fetched.op_code = Some(self.signals.data);
+                match self.fetched.prefix {
+                    0xdd => self.regs.index_mode = IndexMode::Ix,
+                    0xfd => self.regs.index_mode = IndexMode::Iy,
+                    _ => self.regs.index_mode = IndexMode::Hl,
+                }
             }
             3 => {}
             4 => {
@@ -450,6 +541,21 @@ impl CPU {
         false
     }
 
+    fn pr_r(self: &mut Self, addr: u16, r: u8) -> bool {
+        self.current_ops_ts += 1;
+        match self.current_ops_ts {
+            1 => self.signals.addr = addr,
+            2 => self.signals.port = SignalReq::Read,
+            3 => {
+                self.regs.set_r(r, self.signals.data);
+                self.signals.port = SignalReq::None;
+                return true;
+            }
+            _ => panic!(),
+        }
+        false
+    }
+
     fn mr(self: &mut Self) -> bool {
         self.current_ops_ts += 1;
         match self.current_ops_ts {
@@ -472,6 +578,22 @@ impl CPU {
         false
     }
 
+    fn mr_d(self: &mut Self) -> bool {
+        self.current_ops_ts += 1;
+        match self.current_ops_ts {
+            1 => self.signals.addr = self.regs.pc,
+            2 => self.signals.mem = SignalReq::Read,
+            3 => {
+                self.fetched.d = Some(self.signals.data);
+                self.signals.mem = SignalReq::None;
+                self.regs.pc += 1;
+                return true;
+            }
+            _ => panic!(),
+        }
+        false
+    }
+
     fn mw_8(self: &mut Self, addr: u16, data: u8) -> bool {
         self.current_ops_ts += 1;
         match self.current_ops_ts {
@@ -482,6 +604,23 @@ impl CPU {
             2 => self.signals.mem = SignalReq::Write,
             3 => {
                 self.signals.mem = SignalReq::None;
+                return true;
+            }
+            _ => panic!(),
+        }
+        false
+    }
+
+    fn pw_8(self: &mut Self, addr: u16, data: u8) -> bool {
+        self.current_ops_ts += 1;
+        match self.current_ops_ts {
+            1 => {
+                self.signals.addr = addr;
+                self.signals.data = data;
+            }
+            2 => self.signals.port = SignalReq::Write,
+            3 => {
+                self.signals.port = SignalReq::None;
                 return true;
             }
             _ => panic!(),

@@ -1,14 +1,21 @@
 macro_rules! make_reg_functions {
     ($name:ident, $name2:ident, $l:ident, $h:ident) => {
-        pub fn $name(self: &Self) -> u16 {
+        fn $name(self: &Self) -> u16 {
             ((self.$l as u16) << 8) | (self.$h as u16)
         }
 
-        pub fn $name2(self: &mut Self, v: u16) {
+        fn $name2(self: &mut Self, v: u16) {
             self.$l = ((v >> 8) as u8);
             self.$h = (v as u8);
         }
     };
+}
+
+#[derive(Copy, Clone)]
+pub enum IndexMode {
+    Hl,
+    Ix,
+    Iy,
 }
 
 #[derive(Copy, Clone)]
@@ -19,32 +26,36 @@ pub struct Registers {
     pub b: u8,
     pub c: u8,
 
-    pub d: u8,
-    pub e: u8,
+    d: u8,
+    e: u8,
 
-    pub h: u8,
-    pub l: u8,
+    h: u8,
+    l: u8,
 
-    pub a_: u8,
-    pub f_: Flags,
+    a_: u8,
+    f_: Flags,
 
-    pub b_: u8,
-    pub c_: u8,
+    b_: u8,
+    c_: u8,
 
-    pub d_: u8,
-    pub e_: u8,
+    d_: u8,
+    e_: u8,
 
-    pub h_: u8,
-    pub l_: u8,
+    h_: u8,
+    l_: u8,
 
-    pub ix: u16,
-    pub iy: u16,
+    ixl: u8,
+    ixh: u8,
+
+    iyl: u8,
+    iyh: u8,
 
     pub sp: u16,
     pub pc: u16,
 
     pub m1: bool,
     pub r: u8,
+    pub index_mode: IndexMode,
 }
 
 impl Registers {
@@ -66,18 +77,23 @@ impl Registers {
             e_: 0,
             h_: 0,
             l_: 0,
-            ix: 0,
-            iy: 0,
+            ixh: 0,
+            ixl: 0,
+            iyh: 0,
+            iyl: 0,
             sp: 0,
             pc: 0,
             m1: false,
             r: 0,
+            index_mode: IndexMode::Hl,
         }
     }
 
     make_reg_functions!(bc, set_bc, b, c);
     make_reg_functions!(de, set_de, d, e);
     make_reg_functions!(hl, set_hl, h, l);
+    make_reg_functions!(ix, set_ix, ixh, ixl);
+    make_reg_functions!(iy, set_iy, iyh, iyl);
 
     make_reg_functions!(bc_aux, set_bc_aux, b_, c_);
     make_reg_functions!(de_aux, set_de_aux, d_, e_);
@@ -107,8 +123,16 @@ impl Registers {
             1 => self.c,
             2 => self.d,
             3 => self.e,
-            4 => self.h,
-            5 => self.l,
+            4 => match self.index_mode {
+                IndexMode::Hl => self.h,
+                IndexMode::Ix => self.ixh,
+                IndexMode::Iy => self.iyh,
+            },
+            5 => match self.index_mode {
+                IndexMode::Hl => self.l,
+                IndexMode::Ix => self.ixl,
+                IndexMode::Iy => self.iyl,
+            },
             7 => self.a,
             _ => panic!("get_r r:{}", r),
         }
@@ -120,43 +144,119 @@ impl Registers {
             1 => self.c = v,
             2 => self.d = v,
             3 => self.e = v,
-            4 => self.h = v,
-            5 => self.l = v,
+            4 => match self.index_mode {
+                IndexMode::Hl => self.h = v,
+                IndexMode::Ix => self.ixh = v,
+                IndexMode::Iy => self.iyh = v,
+            },
+            5 => match self.index_mode {
+                IndexMode::Hl => self.l = v,
+                IndexMode::Ix => self.ixl = v,
+                IndexMode::Iy => self.iyl = v,
+            },
             7 => self.a = v,
             _ => panic!("get_r r:{}", r),
         }
     }
 
-    pub fn get_rp(&mut self, r: u8, alt: bool) -> u16 {
+    pub fn get_rr(&self, r: u8) -> u16 {
         match r {
             0 => self.bc(),
             1 => self.de(),
-            2 => self.hl(),
-            3 => {
-                if alt {
-                    self.af()
-                } else {
-                    self.sp
-                }
-            }
+            2 => match self.index_mode {
+                IndexMode::Hl => self.hl(),
+                IndexMode::Ix => self.ix(),
+                IndexMode::Iy => self.iy(),
+            },
+            3 => self.sp,
+            _ => panic!("get_rr r:{}", r),
+        }
+    }
+
+    pub fn get_rr2(&self, r: u8) -> u16 {
+        match r {
+            3 => self.af(),
+            _ => self.get_rr(r),
+        }
+    }
+
+    pub fn get_idx(&self, d: u8) -> u16 {
+        let mut v;
+        match self.index_mode {
+            IndexMode::Ix => v = self.ix(),
+            IndexMode::Iy => v = self.iy(),
+            _ => panic!("get_idx"),
+        }
+        v = (v as i16).wrapping_add((d as i8) as i16) as u16;
+        v
+    }
+
+    pub fn set_rr(&mut self, r: u8, v: u16) {
+        match r {
+            0 => self.set_bc(v),
+            1 => self.set_de(v),
+            2 => match self.index_mode {
+                IndexMode::Hl => self.set_hl(v),
+                IndexMode::Ix => self.set_ix(v),
+                IndexMode::Iy => self.set_iy(v),
+            },
+            3 => self.sp = v,
             _ => panic!("set_rp r:{}", r),
         }
     }
 
-    pub fn set_rr(&mut self, r: u8, v: u16, alt: bool) {
+    pub fn set_rr2(&mut self, r: u8, v: u16) {
         match r {
-            0 => self.set_bc(v),
-            1 => self.set_de(v),
-            2 => self.set_hl(v),
-            3 => {
-                if alt {
-                    self.set_af(v)
-                } else {
-                    self.sp = v
-                }
-            }
-            _ => panic!("set_rp r:{}", r),
+            3 => self.set_af(v),
+            _ => self.set_rr(r, v),
         }
+    }
+
+    pub fn exafaf(&mut self) {
+        (self.a, self.a_) = (self.a_, self.a);
+        (self.f, self.f_) = (self.f_, self.f);
+    }
+
+    pub fn exx(&mut self) {
+        (self.b, self.b_) = (self.b_, self.b);
+        (self.c, self.c_) = (self.c_, self.c);
+        (self.d, self.d_) = (self.d_, self.d);
+        (self.e, self.e_) = (self.e_, self.e);
+        (self.h, self.h_) = (self.h_, self.h);
+        (self.l, self.l_) = (self.l_, self.l);
+    }
+
+    pub(crate) fn set_all_regs(&mut self, registers: [u16; 12]) {
+        self.set_af(registers[0]);
+        self.set_bc(registers[1]);
+        self.set_de(registers[2]);
+        self.set_hl(registers[3]);
+        self.set_af_aux(registers[4]);
+        self.set_bc_aux(registers[5]);
+        self.set_de_aux(registers[6]);
+        self.set_hl_aux(registers[7]);
+        self.set_ix(registers[8]);
+        self.set_iy(registers[9]);
+        self.sp = registers[10];
+        self.pc = registers[11];
+    }
+
+    pub(crate) fn dump_registers(&self) -> String {
+        format!(
+            "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x}",
+            self.af(),
+            self.bc(),
+            self.de(),
+            self.hl(),
+            self.af_aux(),
+            self.bc_aux(),
+            self.de_aux(),
+            self.hl_aux(),
+            self.ix(),
+            self.iy(),
+            self.sp,
+            self.pc,
+        )
     }
 }
 

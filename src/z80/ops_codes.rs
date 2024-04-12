@@ -47,10 +47,15 @@ pub fn ld_r_n(cpu: &mut CPU, y: u8) {
         (6, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
         (6, IndexMode::Ix | IndexMode::Iy, Some(_), None) => cpu.scheduler.push(Operation::MrPcN),
         (6, IndexMode::Ix | IndexMode::Iy, Some(d), Some(n)) => {
+            cpu.fetched.op_code = None;
+            cpu.scheduler.push(Operation::Delay(2));
             cpu.scheduler.push(Operation::Mw8(cpu.regs.get_idx(d), n));
         }
         (_, _, _, None) => cpu.scheduler.push(Operation::MrPcN),
-        (6, _, _, Some(v)) => cpu.scheduler.push(Operation::Mw8(cpu.regs.get_rr(2), v)),
+        (6, _, _, Some(v)) => {
+            cpu.fetched.op_code = None;
+            cpu.scheduler.push(Operation::Mw8(cpu.regs.get_rr(2), v))
+        }
         (_, _, _, Some(v)) => cpu.regs.set_r(y, v),
     }
 }
@@ -67,7 +72,7 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
             cpu.regs.index_mode = IndexMode::Hl;
             cpu.scheduler.push(Operation::Mw8(addr, cpu.regs.get_r(z)));
             cpu.fetched.op_code = None;
-            cpu.scheduler.push(Operation::Delay(10));
+            cpu.scheduler.push(Operation::Delay(5));
         }
 
         (_, 6, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
@@ -82,6 +87,7 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
         }
 
         (6, _, _, _, _) => {
+            cpu.fetched.op_code = None;
             cpu.scheduler
                 .push(Operation::Mw8(cpu.regs.get_rr(2), cpu.regs.get_r(z)));
         }
@@ -125,6 +131,8 @@ fn inc_dec_r(cpu: &mut CPU, r: u8, is_inc: bool) {
                 } else {
                     v = dec(cpu, v);
                 }
+                cpu.fetched.op_code = None;
+                cpu.scheduler.push(Operation::Delay(1));
                 cpu.scheduler.push(Operation::Mw8(cpu.regs.get_rr(2), v));
             }
         },
@@ -139,8 +147,9 @@ fn inc_dec_r(cpu: &mut CPU, r: u8, is_inc: bool) {
                     v = dec(cpu, v);
                 }
 
-                cpu.scheduler.push(Operation::Mw8(cpu.regs.get_idx(d), v));
+                cpu.fetched.op_code = None;
                 cpu.scheduler.push(Operation::Delay(6));
+                cpu.scheduler.push(Operation::Mw8(cpu.regs.get_idx(d), v));
             }
             _ => unreachable!("Invalid inc_r instruction"),
         },
@@ -271,15 +280,21 @@ pub fn ccf(cpu: &mut CPU) {
 
 pub fn alu(cpu: &mut CPU, x: u8, y: u8, z: u8) {
     let mut v: Option<u8> = None;
-    match (x, z) {
-        (2, 6) => match cpu.fetched.n {
-            None => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
-            Some(n) => v = Some(n),
-        },
-        (3, 6) => match cpu.fetched.n {
-            None => cpu.scheduler.push(Operation::MrPcN),
-            Some(n) => v = Some(n),
-        },
+    match (x, z, cpu.regs.index_mode, cpu.fetched.d, cpu.fetched.n) {
+        (2, 6, IndexMode::Iy | IndexMode::Ix, None, None) => {
+            cpu.scheduler.push(Operation::MrPcD);
+        }
+        (2, 6, IndexMode::Iy | IndexMode::Ix, Some(d), None) => {
+            cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_idx(d)));
+            cpu.scheduler.push(Operation::Delay(5));
+        }
+        (2, 6, IndexMode::Iy | IndexMode::Ix, Some(d), Some(n)) => v = Some(n),
+
+        (2, 6, _, _, None) => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
+        (2, 6, _, _, Some(n)) => v = Some(n),
+        (3, 6, _, _, None) => cpu.scheduler.push(Operation::MrPcN),
+        (3, 6, _, _, Some(n)) => v = Some(n),
+
         _ => v = Some(cpu.regs.get_r(z)),
     }
     match v {
@@ -381,6 +396,18 @@ fn update_flags_ula_logic(cpu: &mut CPU) {
     cpu.regs.f.p = PARITY_TABLE[cpu.regs.a as usize];
     cpu.regs.f.n = false;
     cpu.regs.f.c = false;
+}
+
+pub fn ret_cc(cpu: &mut CPU, y: u8) {
+    match cpu.fetched.decode_step {
+        0 => cpu.scheduler.push(Operation::Delay(1)),
+        1 | 2 => {
+            if cpu.if_cc(y) {
+                ret(cpu)
+            }
+        }
+        _ => unreachable!("Invalid ret_cc instruction"),
+    }
 }
 
 pub fn ret(cpu: &mut CPU) {

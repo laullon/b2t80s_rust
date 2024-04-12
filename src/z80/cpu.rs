@@ -38,6 +38,7 @@ pub struct Fetched {
     pub n: Option<u8>,
     pub nn: Option<u16>,
     pub d: Option<u8>,
+    pub decode_step: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -70,6 +71,7 @@ impl CPU {
                 n: None,
                 nn: None,
                 d: None,
+                decode_step: 0,
             },
             scheduler: Vec::new(),
             wait: false,
@@ -107,6 +109,7 @@ impl CPU {
                     self.fetched.n = None;
                     self.fetched.nn = None;
                     self.fetched.d = None;
+                    self.fetched.decode_step = 0;
                     self.current_ops = Some(Operation::Fetch);
                 }
             } else {
@@ -154,8 +157,8 @@ impl CPU {
         let q = y & 0b00000001;
 
         println!(
-            "pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
-            self.fetched.prefix, op_code, x, y, z, p, q
+            "{} - pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
+            self.fetched.decode_step, self.fetched.prefix, op_code, x, y, z, p, q
         );
         match (self.fetched.prefix, x) {
             (0 | 0xdd, 0) => self.x0_ops(z, y, q, p),
@@ -165,6 +168,7 @@ impl CPU {
             (0xcb, _) => self.cb_ops(x, y, z),
             _ => todo!("decode_and_run x:{}", x),
         }
+        self.fetched.decode_step += 1;
     }
 
     fn cb_ops(&mut self, x: u8, y: u8, z: u8) {
@@ -199,6 +203,7 @@ impl CPU {
 
         match (z, r) {
             (6, Some(r)) => {
+                self.fetched.op_code = None;
                 self.scheduler.push(Operation::Mw8(self.regs.get_rr(2), r));
             }
             (_, Some(r)) => {
@@ -243,12 +248,7 @@ impl CPU {
 
     fn x3_ops(&mut self, z: u8, y: u8, q: u8, p: u8) {
         match z {
-            0 => {
-                self.scheduler.push(Operation::Delay(1));
-                if self.if_cc(y) {
-                    ret(self)
-                }
-            }
+            0 => ret_cc(self, y),
             1 => self.x3_z1_ops(q, p),
             2 => jp(self, Some(y)),
             3 => self.x3_z3_ops(y),
@@ -341,7 +341,9 @@ impl CPU {
                     match y {
                         2 => {
                             self.regs.b = self.regs.b.wrapping_sub(1);
-                            jump = self.regs.b != 0
+                            println!("=> b: {}", self.regs.b);
+                            jump = self.regs.b != 0;
+                            self.scheduler.push(Operation::Delay(1));
                         }
                         3 => {}
                         4 => jump = self.regs.f.z == false,
@@ -354,9 +356,7 @@ impl CPU {
                         let jump = self.fetched.n.unwrap() as i8;
                         println!("pc:{} jump{}", self.regs.pc, jump);
                         self.regs.pc = self.regs.pc.wrapping_add(jump as u16);
-                        self.scheduler.push(Operation::Delay(6));
-                    } else {
-                        self.scheduler.push(Operation::Delay(1));
+                        self.scheduler.push(Operation::Delay(5));
                     }
                     self.fetched.op_code = None;
                 }
@@ -388,6 +388,7 @@ impl CPU {
         match q {
             0 => match p {
                 0 | 1 => {
+                    self.fetched.op_code = None;
                     self.scheduler
                         .push(Operation::Mw8(self.regs.get_rr(p), self.regs.a));
                 }
@@ -397,6 +398,7 @@ impl CPU {
                         self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
+                        self.fetched.op_code = None;
                         self.scheduler
                             .push(Operation::Mw16(nn, self.regs.get_rr(p)));
                     }
@@ -407,6 +409,7 @@ impl CPU {
                         self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
+                        self.fetched.op_code = None;
                         self.scheduler.push(Operation::Mw8(nn, self.regs.a));
                     }
                 },

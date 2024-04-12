@@ -96,6 +96,16 @@ fn test_opcodes() {
             let cpu_mem = &mem[(m.start)..(m.start + m.data.len())];
             assert_eq!(cpu_mem, m.data, "mem '{:04x}' fail !!!", m.start);
         }
+        assert!(
+            matches!(cpu.current_ops, None),
+            "current_ops not None !!! {:?}",
+            cpu.current_ops
+        );
+        assert!(
+            cpu.scheduler.is_empty(),
+            "scheduler not empty !!! {:?}",
+            cpu.scheduler
+        );
         println!("------------\n");
     }
 }

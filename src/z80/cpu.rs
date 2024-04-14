@@ -157,39 +157,50 @@ impl CPU {
         let q = y & 0b00000001;
 
         println!(
-            "{} - pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
+            "\t{} - pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
             self.fetched.decode_step, self.fetched.prefix, op_code, x, y, z, p, q
         );
         match (self.fetched.prefix, x) {
-            (0 | 0xdd, 0) => self.x0_ops(z, y, q, p),
-            (0 | 0xdd, 1) => self.x1_ops(y, z),
-            (0 | 0xdd, 2) => alu(self, x, y, z),
-            (0 | 0xdd, 3) => self.x3_ops(z, y, q, p),
-            (0xcb, _) => self.cb_ops(x, y, z),
+            (0 | 0xdd | 0xfd, 0) => self.x0_ops(z, y, q, p),
+            (0 | 0xdd | 0xfd, 1) => self.x1_ops(y, z),
+            (0 | 0xdd | 0xfd, 2) => alu(self, x, y, z),
+            (0 | 0xdd | 0xfd, 3) => self.x3_ops(z, y, q, p),
+            (0xcb | 0xddcb | 0xfdcb, _) => self.cb_ops(x, y, z),
             _ => todo!("decode_and_run x:{}", x),
         }
         self.fetched.decode_step += 1;
     }
 
     fn cb_ops(&mut self, x: u8, y: u8, z: u8) {
-        match x {
-            0 => self.rot(y, z),
-            1 => self.bit_ops(x, y, z),
-            2 => self.bit_ops(x, y, z),
-            3 => self.bit_ops(x, y, z),
+        match (self.fetched.prefix, self.fetched.d, x) {
+            (0xddcb | 0xffcb, None, _) => {
+                self.fetched.d = self.fetched.op_code;
+                self.fetched.op_code = None;
+                self.scheduler.push(Operation::Fetch);
+            }
+            (_, _, 0) => self.rot(y, z),
+            (_, _, 1) => self.bit_ops(x, y, z),
+            (_, _, 2) => self.bit_ops(x, y, z),
+            (_, _, 3) => self.bit_ops(x, y, z),
             _ => unreachable!("Invalid cb instruction"),
         }
     }
 
     fn bit_ops(&mut self, x: u8, y: u8, z: u8) {
         let mut v = None;
-        match (z, self.fetched.n) {
-            (6, None) => {
+        match (z, self.fetched.n, self.regs.index_mode) {
+            (6, None, IndexMode::Hl) => {
                 self.scheduler.push(Operation::MrAddrN(self.regs.get_rr(2)));
                 self.scheduler.push(Operation::Delay(1));
             }
-            (6, Some(n)) => v = Some(n),
-            (_, None) => v = Some(self.regs.get_r(z)),
+            (_, None, IndexMode::Ix | IndexMode::Iy) => {
+                self.scheduler.push(Operation::MrAddrN(
+                    self.regs.get_idx(self.fetched.d.unwrap()),
+                ));
+                self.scheduler.push(Operation::Delay(1));
+            }
+            (_, Some(n), _) => v = Some(n),
+            (_, None, _) => v = Some(self.regs.get_r(z)),
             _ => unreachable!("Invalid bit instruction (r)"),
         }
 
@@ -201,12 +212,23 @@ impl CPU {
             _ => (),
         }
 
-        match (z, r) {
-            (6, Some(r)) => {
+        match (z, r, self.regs.index_mode) {
+            (6, Some(r), IndexMode::Hl) => {
                 self.fetched.op_code = None;
                 self.scheduler.push(Operation::Mw8(self.regs.get_rr(2), r));
             }
-            (_, Some(r)) => {
+            (_, Some(r), IndexMode::Ix | IndexMode::Iy) => {
+                self.fetched.op_code = None;
+                self.scheduler.push(Operation::Mw8(
+                    self.regs.get_idx(self.fetched.d.unwrap()),
+                    r,
+                ));
+                if z != 6 {
+                    self.regs.index_mode = IndexMode::Hl;
+                    self.regs.set_r(z, r);
+                }
+            }
+            (_, Some(r), _) => {
                 self.regs.set_r(z, r);
             }
             _ => (),
@@ -214,11 +236,17 @@ impl CPU {
     }
 
     fn rot(&mut self, y: u8, z: u8) {
+        println!("rot");
         let mut v = None;
-        match (z, self.fetched.n) {
-            (6, None) => self.scheduler.push(Operation::MrAddrN(self.regs.get_rr(2))),
-            (6, Some(n)) => v = Some(n),
-            (_, None) => v = Some(self.regs.get_r(z)),
+        match (z, self.fetched.n, self.regs.index_mode) {
+            (6, None, IndexMode::Hl) => {
+                self.scheduler.push(Operation::MrAddrN(self.regs.get_rr(2)))
+            }
+            (_, None, IndexMode::Ix | IndexMode::Iy) => self.scheduler.push(Operation::MrAddrN(
+                self.regs.get_idx(self.fetched.d.unwrap()),
+            )),
+            (_, Some(n), _) => v = Some(n),
+            (_, None, _) => v = Some(self.regs.get_r(z)),
             _ => unreachable!("Invalid rot instruction (r)"),
         }
 
@@ -235,13 +263,25 @@ impl CPU {
             (_, None) => (),
             _ => unreachable!("Invalid rot instruction"),
         }
-        match (z, res) {
-            (6, Some(r)) => {
+        match (z, res, self.regs.index_mode) {
+            (6, Some(r), IndexMode::Hl) => {
                 self.fetched.op_code = None;
                 self.scheduler.push(Operation::Delay(1));
                 self.scheduler.push(Operation::Mw8(self.regs.get_rr(2), r))
             }
-            (_, Some(r)) => self.regs.set_r(z, r),
+            (_, Some(r), IndexMode::Ix | IndexMode::Iy) => {
+                self.fetched.op_code = None;
+                self.scheduler.push(Operation::Delay(1));
+                self.scheduler.push(Operation::Mw8(
+                    self.regs.get_idx(self.fetched.d.unwrap()),
+                    r,
+                ));
+                if z != 6 {
+                    self.regs.index_mode = IndexMode::Hl;
+                    self.regs.set_r(z, r);
+                }
+            }
+            (_, Some(r), _) => self.regs.set_r(z, r),
             _ => (),
         }
     }
@@ -266,7 +306,13 @@ impl CPU {
             1 => self.scheduler.push(Operation::Fetch),
             2 => out_na(self),
             3 => in_na(self),
-            _ => unreachable!("Invalid x3_z3 instruction"),
+            4 => ex_sp_hl(self),
+            5 => {
+                let hl = self.regs.get_rr(2);
+                self.regs.set_rr(2, self.regs.get_rr(1));
+                self.regs.set_rr(1, hl);
+            }
+            _ => unreachable!("Invalid x3_z3 instruction y={}", y),
         }
     }
 
@@ -274,8 +320,8 @@ impl CPU {
         match (q, p) {
             (0, _) => push(self, p),
             (1, 0) => call(self, None),
-            (1, 1) => self.scheduler.push(Operation::Fetch),
-            _ => unreachable!(),
+            (1, 1 | 3) => self.scheduler.push(Operation::Fetch),
+            _ => unreachable!("Invalid x3_z5 instruction ({}, {})", q, p),
         }
     }
 
@@ -284,7 +330,13 @@ impl CPU {
             (0, _) => pop(self, p),
             (1, 0) => ret(self),
             (1, 1) => self.regs.exx(),
-            _ => unreachable!("Invalid x3_z1 instruction"),
+            (1, 2) => self.regs.pc = self.regs.get_rr(2),
+            (1, 3) => {
+                self.fetched.op_code = None;
+                self.scheduler.push(Operation::Delay(2));
+                self.regs.sp = self.regs.get_rr(2)
+            }
+            _ => unreachable!("Invalid x3_z1 instruction ({}, {})", q, p),
         }
     }
 
@@ -490,8 +542,16 @@ impl CPU {
                 }
                 self.fetched.op_code = Some(self.signals.data);
                 match self.fetched.prefix {
-                    0xdd => self.regs.index_mode = IndexMode::Ix,
-                    0xfd => self.regs.index_mode = IndexMode::Iy,
+                    0xdd | 0xddcb => self.regs.index_mode = IndexMode::Ix,
+                    0xfd | 0xfdcb => self.regs.index_mode = IndexMode::Iy,
+                    0xddfd | 0xfdfd => {
+                        self.fetched.prefix = 0xfd;
+                        self.regs.index_mode = IndexMode::Iy
+                    }
+                    0xfddd | 0xdddd => {
+                        self.fetched.prefix = 0xdd;
+                        self.regs.index_mode = IndexMode::Iy
+                    }
                     _ => self.regs.index_mode = IndexMode::Hl,
                 }
             }

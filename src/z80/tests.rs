@@ -65,21 +65,21 @@ fn test_opcodes() {
             match cpu.signals.mem {
                 SignalReq::Read => {
                     cpu.signals.data = mem[cpu.signals.addr as usize];
-                    println!("    MR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    println!("\tMR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
                 }
                 SignalReq::Write => {
                     mem[cpu.signals.addr as usize] = cpu.signals.data;
-                    println!("    MW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    println!("\tMW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
                 }
                 SignalReq::None => (),
             }
             match cpu.signals.port {
                 SignalReq::Read => {
                     cpu.signals.data = cpu.signals.addr as u8;
-                    println!("    PR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    println!("\tPR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
                 }
                 SignalReq::Write => {
-                    println!("    PW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    println!("\tPW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
                 }
                 SignalReq::None => (),
             }

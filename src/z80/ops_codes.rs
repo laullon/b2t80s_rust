@@ -288,7 +288,7 @@ pub fn alu(cpu: &mut CPU, x: u8, y: u8, z: u8) {
             cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_idx(d)));
             cpu.scheduler.push(Operation::Delay(5));
         }
-        (2, 6, IndexMode::Iy | IndexMode::Ix, Some(d), Some(n)) => v = Some(n),
+        (2, 6, IndexMode::Iy | IndexMode::Ix, Some(_), Some(n)) => v = Some(n),
 
         (2, 6, _, _, None) => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
         (2, 6, _, _, Some(n)) => v = Some(n),
@@ -614,6 +614,23 @@ pub fn in_na(cpu: &mut CPU) {
             cpu.scheduler.push(Operation::Delay(1));
             cpu.scheduler.push(Operation::PrR(port, 7));
             cpu.fetched.op_code = None;
+        }
+    }
+}
+
+pub fn ex_sp_hl(cpu: &mut CPU) {
+    println!("**");
+    match cpu.fetched.nn {
+        None => {
+            cpu.scheduler.push(Operation::MrAddrN(cpu.regs.sp));
+            cpu.scheduler.push(Operation::MrAddrN(cpu.regs.sp + 1));
+        }
+        Some(nn) => {
+            let hl = cpu.regs.get_rr(2);
+            cpu.regs.set_rr(2, nn);
+            cpu.fetched.op_code = None;
+            cpu.scheduler.push(Operation::Delay(3));
+            cpu.scheduler.push(Operation::Mw16(cpu.regs.sp, hl));
         }
     }
 }

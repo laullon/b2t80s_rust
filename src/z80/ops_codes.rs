@@ -1,6 +1,7 @@
 use super::{cpu::CPU, registers::IndexMode};
 use crate::z80::cpu::Operation;
 
+pub const IM: [u8; 8] = [0, 0, 1, 2, 0, 0, 1, 2];
 const OVERFLOW_ADD_TABLE: [bool; 8] = [false, false, false, true, true, false, false, false];
 const OVERFLOW_SUB_TABLE: [bool; 8] = [false, true, false, false, false, false, true, false];
 const HALFCARRY_ADD_TABLE: [bool; 8] = [false, true, true, true, false, false, false, true];
@@ -591,17 +592,6 @@ pub fn out_na(cpu: &mut CPU) {
     }
 }
 
-// func inAn(cpu *z80) {
-// 	inAn_f = cpu.regs.F.GetByte()
-// 	port := toWord(cpu.fetched.n, cpu.regs.A)
-// 	cpu.scheduler.append(&in{from: port, f: inAn_m1})
-// }
-
-// func inAn_m1(cpu *z80, data uint8) {
-// 	cpu.regs.A = data
-// 	cpu.regs.F.SetByte(inAn_f)
-// }
-
 pub fn in_na(cpu: &mut CPU) {
     match cpu.fetched.n {
         None => cpu.scheduler.push(Operation::MrPcN),
@@ -652,19 +642,42 @@ pub fn out_c_r(cpu: &mut CPU, r: u8) {
 
 pub fn sbc_hl(cpu: &mut CPU, ss: u16) {
     let hl = cpu.regs.get_rr(2);
-    let mut res = u32::from(hl) - u32::from(ss);
-    if cpu.regs.f.c {
-        res -= 1;
-    }
-    cpu.regs.set_rr(2, res as u16);
 
-    let lookup = ((hl & 0x8800) >> 11) | ((ss & 0x8800) >> 10) | ((res as u16 & 0x8800) >> 9);
+    let (result, carry1) = hl.overflowing_sub(ss);
+    let (result_with_carry, carry2) = result.overflowing_sub(if cpu.regs.f.c { 1 } else { 0 });
+
+    cpu.regs.set_rr(2, result_with_carry as u16);
+
+    let lookup =
+        ((hl & 0x8800) >> 11) | ((ss & 0x8800) >> 10) | ((result_with_carry as u16 & 0x8800) >> 9);
     cpu.regs.f.n = true;
     cpu.regs.f.s = cpu.regs.get_r(4) & 0x80 != 0; // negative
-    cpu.regs.f.z = res == 0;
-    cpu.regs.f.c = (res & 0x10000) != 0;
+    cpu.regs.f.z = result_with_carry == 0;
     cpu.regs.f.p = OVERFLOW_SUB_TABLE[(lookup >> 4) as usize];
-    cpu.regs.f.h = HALFCARRY_SUB_TABLE[(lookup & 0x07) as usize];
+    cpu.regs.f.h = (hl & 0xFFF) < (ss & 0xFFF) + (if cpu.regs.f.c { 1 } else { 0 }); // Set half-carry flag based on lower 12 bits
+    cpu.regs.f.c = carry1 || carry2; // Set carry flag based on subtraction overflow
+
+    cpu.fetched.op_code = None;
+    cpu.scheduler.push(Operation::Delay(7));
+}
+
+pub fn adc_hl(cpu: &mut CPU, ss: u16) {
+    println!("adc_hl {:04x}", ss);
+    let hl = cpu.regs.get_rr(2);
+
+    let (result, carry1) = hl.overflowing_add(ss);
+    let (result_with_carry, carry2) = result.overflowing_add(if cpu.regs.f.c { 1 } else { 0 });
+
+    cpu.regs.set_rr(2, result_with_carry as u16);
+
+    let lookup =
+        ((hl & 0x8800) >> 11) | ((ss & 0x8800) >> 10) | ((result_with_carry as u16 & 0x8800) >> 9);
+    cpu.regs.f.n = false;
+    cpu.regs.f.s = cpu.regs.get_r(4) & 0x80 != 0; // negative
+    cpu.regs.f.z = result_with_carry == 0;
+    cpu.regs.f.c = carry1 || carry2;
+    cpu.regs.f.p = OVERFLOW_ADD_TABLE[(lookup >> 4) as usize];
+    cpu.regs.f.h = (hl & 0xFFF) + (ss & 0xFFF) > 0xFFF; // Set half-carry flag based on lower 12 bits
 
     cpu.fetched.op_code = None;
     cpu.scheduler.push(Operation::Delay(7));
@@ -678,8 +691,81 @@ pub fn ld_nn_rr(cpu: &mut CPU, p: u8) {
         }
         Some(nn) => {
             cpu.fetched.op_code = None;
-            // cpu.scheduler.push(Operation::Delay(6));
             cpu.scheduler.push(Operation::Mw16(nn, cpu.regs.get_rr(p)));
         }
     }
+}
+
+pub fn ld_rr_nn(cpu: &mut CPU, p: u8) {
+    match cpu.fetched.nn {
+        None => {
+            cpu.scheduler.push(Operation::MrPcN);
+            cpu.scheduler.push(Operation::MrPcN);
+        }
+        Some(nn) => {
+            cpu.fetched.op_code = None;
+            cpu.scheduler.push(Operation::MrAddrR(nn, (p * 2) + 1));
+            cpu.scheduler.push(Operation::MrAddrR(nn + 1, p * 2));
+        }
+    }
+}
+
+pub fn rdd(cpu: &mut CPU) {
+    match cpu.fetched.n {
+        None => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
+        Some(n) => {
+            let al = cpu.regs.a & 0x0f;
+            let nh = n >> 4;
+            let nl = n & 0x0f;
+
+            let new_a = (cpu.regs.a & 0xf0) | nl;
+            let new_n = (al << 4) | nh;
+
+            cpu.scheduler.push(Operation::Delay(4));
+            cpu.scheduler
+                .push(Operation::Mw8(cpu.regs.get_rr(2), new_n));
+            cpu.fetched.op_code = None;
+            cpu.regs.a = new_a;
+            update_flags_after_rdd_rld(cpu);
+        }
+    }
+}
+
+pub fn rld(cpu: &mut CPU) {
+    match cpu.fetched.n {
+        None => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
+        Some(n) => {
+            let al = cpu.regs.a & 0x0f;
+            let nh = n >> 4;
+            let nl = n & 0x0f;
+
+            let new_a = (cpu.regs.a & 0xf0) | nh;
+            let new_n = (nl << 4) | al;
+
+            cpu.scheduler.push(Operation::Delay(4));
+            cpu.scheduler
+                .push(Operation::Mw8(cpu.regs.get_rr(2), new_n));
+            cpu.fetched.op_code = None;
+            cpu.regs.a = new_a;
+            update_flags_after_rdd_rld(cpu);
+        }
+    }
+}
+
+fn update_flags_after_rdd_rld(cpu: &mut CPU) {
+    let a = cpu.regs.a;
+    cpu.regs.f.s = a & 0x80 != 0;
+    cpu.regs.f.z = a == 0;
+    cpu.regs.f.p = PARITY_TABLE[a as usize];
+    cpu.regs.f.h = false;
+    cpu.regs.f.n = false;
+}
+
+pub fn ld_a_ir_flags(cpu: &mut CPU) {
+    let a = cpu.regs.a;
+    cpu.regs.f.s = a & 0x80 != 0;
+    cpu.regs.f.z = a == 0;
+    cpu.regs.f.p = cpu.regs.iff2;
+    cpu.regs.f.h = false;
+    cpu.regs.f.n = false;
 }

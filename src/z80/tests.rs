@@ -32,6 +32,14 @@ struct AuxRegs {
     halt: bool,
     ts: u16,
 }
+impl AuxRegs {
+    fn to_string(&self) -> String {
+        format!(
+            "i: {}, r: {}, iff1: {}, iff2: {}, im: {}, halt: {}",
+            self.i, self.r, self.iff1, self.iff2, self.im, self.halt
+        )
+    }
+}
 
 #[derive(Debug)]
 struct TestMemory {
@@ -71,6 +79,13 @@ fn test_opcodes() {
 
             cpu.regs.set_all_regs(test.registers);
 
+            cpu.regs.iff1 = test.aux_rgs.iff1;
+            cpu.regs.iff2 = test.aux_rgs.iff2;
+            cpu.regs.i = test.aux_rgs.i;
+            cpu.regs.im = test.aux_rgs.im;
+            cpu.regs.r = test.aux_rgs.r;
+            cpu.halt = test.aux_rgs.halt;
+
             for _ in 0..result.aux_rgs.ts {
                 match cpu.signals.mem {
                     SignalReq::Read => {
@@ -102,6 +117,11 @@ fn test_opcodes() {
             let res_f = format!("{:08b}", result.registers[0] as u8);
             assert_eq!(cpu_f, res_f, "flags fail !!!");
             assert_eq!(cpu_regs, res_regs, "regs fail !!!");
+            assert_eq!(
+                cpu.dump_registers_aux(),
+                result.aux_rgs.to_string(),
+                "aux_rgs fail !!!"
+            );
             for m in result.memory.iter() {
                 let cpu_mem = &mem[(m.start)..(m.start + m.data.len())];
                 assert_eq!(cpu_mem, m.data, "mem '{:04x}' fail !!!", m.start);

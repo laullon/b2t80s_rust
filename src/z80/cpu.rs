@@ -133,6 +133,10 @@ impl CPU {
                     Operation::PrR(addr, r) => self.pr_r(addr, r),
                 };
                 if done {
+                    println!(
+                        "-- done -- op: {:?} - {}",
+                        self.current_ops, self.current_ops_ts
+                    );
                     self.current_ops = None;
                     self.current_ops_ts = 0;
                     if self.scheduler.is_empty() {
@@ -145,6 +149,40 @@ impl CPU {
     }
 
     fn decode_and_run(&mut self) {
+        let mut fetch_done = false;
+        match (self.fetched.prefix, self.fetched.op_code, self.fetched.n) {
+            (0, Some(0xcb) | Some(0xed), None) => self.scheduler.push(Operation::Fetch),
+            (0, Some(0xdd), None) => {
+                self.scheduler.push(Operation::Fetch);
+                self.regs.index_mode = IndexMode::Ix;
+            }
+            (0, Some(0xfd), None) => {
+                self.scheduler.push(Operation::Fetch);
+                self.regs.index_mode = IndexMode::Iy;
+            }
+            (0xdd | 0xfd, Some(0xcb), None) => {
+                self.scheduler.push(Operation::MrPcD);
+                self.scheduler.push(Operation::Delay(2));
+                self.scheduler.push(Operation::MrPcN);
+            }
+
+            (0xdd | 0xfd, Some(0xdd) | Some(0xfd), None) => {
+                self.fetched.prefix = self.fetched.op_code.unwrap() as u16;
+            }
+
+            (0xdd | 0xfd, Some(0xcb), Some(n)) => {
+                self.fetched.prefix = (self.fetched.prefix << 8) | 0xcb;
+                self.fetched.op_code = Some(n);
+                self.fetched.n = None;
+                fetch_done = true;
+            }
+            _ => fetch_done = true,
+        }
+
+        if !fetch_done {
+            return;
+        };
+
         let op_code = match self.fetched.op_code {
             Some(op_code) => op_code,
             None => return,
@@ -155,16 +193,18 @@ impl CPU {
         let p = y >> 1;
         let q = y & 0b00000001;
 
-        // println!(
-        //     "\t{} - pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
-        //     self.fetched.decode_step, self.fetched.prefix, op_code, x, y, z, p, q
-        // );
+        println!(
+            "<<< pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{} >>>",
+            self.fetched.prefix, op_code, x, y, z, p, q
+        );
+
         match (self.fetched.prefix, x) {
+            (0xcb | 0xddcb | 0xfdcb, _) => self.cb_ops(x, y, z),
+
             (0 | 0xdd | 0xfd, 0) => self.x0_ops(z, y, q, p),
             (0 | 0xdd | 0xfd, 1) => self.x1_ops(y, z),
             (0 | 0xdd | 0xfd, 2) => alu(self, x, y, z),
             (0 | 0xdd | 0xfd, 3) => self.x3_ops(z, y, q, p),
-            (0xcb | 0xddcb | 0xfdcb, _) => self.cb_ops(x, y, z),
             (0xed, _) => self.ed_ops(x, y, z, q, p),
             _ => todo!("decode_and_run x:{}", x),
         }
@@ -178,27 +218,50 @@ impl CPU {
             (1, 1, 6, _) => out_c(self),
             (1, 1, _, _) => out_c_r(self, y),
             (1, 2, _, 0) => sbc_hl(self, self.regs.get_rr(p)),
+            (1, 2, _, 1) => adc_hl(self, self.regs.get_rr(p)),
             (1, 3, _, 0) => ld_nn_rr(self, p),
-            (1, 4, _, 0) => {
+            (1, 3, _, 1) => ld_rr_nn(self, p),
+            (1, 4, _, _) => {
                 let n = self.regs.a;
                 self.regs.a = 0;
                 sub_a(self, n);
             }
+            (1, 5, _, _) => {
+                self.regs.iff1 = self.regs.iff2;
+                ret(self)
+            }
+            (1, 6, _, _) => self.regs.im = IM[y as usize],
+            (1, 7, 0 | 1 | 2 | 3, _) => {
+                match y {
+                    0 => self.regs.i = self.regs.a,
+                    1 => self.regs.r = self.regs.a,
+                    2 => {
+                        self.regs.a = self.regs.i;
+                        ld_a_ir_flags(self);
+                    }
+                    3 => {
+                        self.regs.a = self.regs.r;
+                        ld_a_ir_flags(self);
+                    }
+                    _ => unreachable!("Invalid ed instruction y={}", y),
+                }
+
+                self.fetched.op_code = None;
+                self.scheduler.push(Operation::Delay(1));
+            }
+            (1, 7, 4, _) => rdd(self),
+            (1, 7, 5, _) => rld(self),
+            (1, 7, 6 | 7, _) => {}
             _ => todo!("ed_ops x:{} y:{} z:{} q:{} p:{}", x, y, z, q, p),
         }
     }
 
     fn cb_ops(&mut self, x: u8, y: u8, z: u8) {
-        match (self.fetched.prefix, self.fetched.d, x) {
-            (0xddcb | 0xffcb, None, _) => {
-                self.fetched.d = self.fetched.op_code;
-                self.fetched.op_code = None;
-                self.scheduler.push(Operation::Fetch);
-            }
-            (_, _, 0) => self.rot(y, z),
-            (_, _, 1) => self.bit_ops(x, y, z),
-            (_, _, 2) => self.bit_ops(x, y, z),
-            (_, _, 3) => self.bit_ops(x, y, z),
+        match x {
+            0 => self.rot(y, z),
+            1 => self.bit_ops(x, y, z),
+            2 => self.bit_ops(x, y, z),
+            3 => self.bit_ops(x, y, z),
             _ => unreachable!("Invalid cb instruction"),
         }
     }
@@ -253,14 +316,21 @@ impl CPU {
     }
 
     fn rot(&mut self, y: u8, z: u8) {
+        println!(
+            "rot z:{} n:{:?} mode:{:?}",
+            z, self.fetched.n, self.regs.index_mode
+        );
         let mut v = None;
         match (z, self.fetched.n, self.regs.index_mode) {
             (6, None, IndexMode::Hl) => {
                 self.scheduler.push(Operation::MrAddrN(self.regs.get_rr(2)))
             }
-            (_, None, IndexMode::Ix | IndexMode::Iy) => self.scheduler.push(Operation::MrAddrN(
-                self.regs.get_idx(self.fetched.d.unwrap()),
-            )),
+            (_, None, IndexMode::Ix | IndexMode::Iy) => {
+                self.scheduler.push(Operation::MrAddrN(
+                    self.regs.get_idx(self.fetched.d.unwrap()),
+                ));
+                self.scheduler.push(Operation::Delay(1));
+            }
             (_, Some(n), _) => v = Some(n),
             (_, None, _) => v = Some(self.regs.get_r(z)),
             _ => unreachable!("Invalid rot instruction (r)"),
@@ -287,11 +357,11 @@ impl CPU {
             }
             (_, Some(r), IndexMode::Ix | IndexMode::Iy) => {
                 self.fetched.op_code = None;
-                self.scheduler.push(Operation::Delay(1));
                 self.scheduler.push(Operation::Mw8(
                     self.regs.get_idx(self.fetched.d.unwrap()),
                     r,
                 ));
+
                 if z != 6 {
                     self.regs.index_mode = IndexMode::Hl;
                     self.regs.set_r(z, r);
@@ -541,7 +611,7 @@ impl CPU {
                 self.signals.addr = self.regs.pc;
                 self.signals.mem = SignalReq::Read;
                 self.regs.pc += 1;
-                self.regs.r = self.regs.r & 0x80 | ((self.regs.r + 1) & 0x7f);
+                self.regs.r = (self.regs.r & 0x80) | ((self.regs.r.wrapping_add(1)) & 0x7f);
             }
             2 => {
                 self.regs.m1 = false;
@@ -554,19 +624,6 @@ impl CPU {
                     None => (),
                 }
                 self.fetched.op_code = Some(self.signals.data);
-                match self.fetched.prefix {
-                    0xdd | 0xddcb => self.regs.index_mode = IndexMode::Ix,
-                    0xfd | 0xfdcb => self.regs.index_mode = IndexMode::Iy,
-                    0xddfd | 0xfdfd => {
-                        self.fetched.prefix = 0xfd;
-                        self.regs.index_mode = IndexMode::Iy
-                    }
-                    0xfddd | 0xdddd => {
-                        self.fetched.prefix = 0xdd;
-                        self.regs.index_mode = IndexMode::Iy
-                    }
-                    _ => self.regs.index_mode = IndexMode::Hl,
-                }
             }
             3 => {}
             4 => {
@@ -737,5 +794,12 @@ impl CPU {
     fn delay(self: &mut Self, delay: u8) -> bool {
         self.current_ops_ts += 1;
         self.current_ops_ts == delay
+    }
+
+    pub fn dump_registers_aux(&self) -> String {
+        format!(
+            "i: {}, r: {}, iff1: {}, iff2: {}, im: {}, halt: {}",
+            self.regs.i, self.regs.r, self.regs.iff1, self.regs.iff2, self.regs.im, self.halt
+        )
     }
 }

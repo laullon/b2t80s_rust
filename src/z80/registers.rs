@@ -55,7 +55,13 @@ pub struct Registers {
 
     pub m1: bool,
     pub r: u8,
+    pub i: u8,
     pub index_mode: IndexMode,
+
+    pub iff1: bool,
+    pub iff2: bool,
+
+    pub im: u8,
 }
 
 impl Registers {
@@ -85,7 +91,11 @@ impl Registers {
             pc: 0,
             m1: false,
             r: 0,
+            i: 0,
             index_mode: IndexMode::Hl,
+            iff1: false,
+            iff2: false,
+            im: 0,
         }
     }
 

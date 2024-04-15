@@ -5,8 +5,11 @@ use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
 };
+use std::{io::Read, iter::zip};
 
 use crate::z80::{cpu::SignalReq, cpu::CPU};
+
+use super::registers::Registers;
 
 // use b2t80s_rust::z80::registers::Registers;
 // use b2t80s_rust::z80::{self};
@@ -42,72 +45,79 @@ fn test_opcodes() {
     let tests = read_tests(path.join("tests.in"));
     let results = read_tests(path.join("tests.out"));
     assert_eq!(tests.len(), results.len());
+    let total = tests.len();
 
-    for t in 0..results.len() {
-        let test = &tests[t];
-        let result = &results[t];
-        let mut mem = [0 as u8; 0x010000];
-        println!("\n---- {} ----", test.name);
+    zip(&tests, &results)
+        .enumerate()
+        .for_each(|(i, (test, result))| {
+            let mut mem = [0 as u8; 0x010000];
+            println!(
+                "\n---- {} ---- {}/{} ({}%) ----",
+                test.name,
+                i,
+                total,
+                (i * 100) / total
+            );
 
-        for test_mem in &test.memory {
-            let mut start = test_mem.start;
-            for d in &test_mem.data {
-                mem[start as usize] = *d;
-                start += 1;
+            for test_mem in &test.memory {
+                let mut start = test_mem.start;
+                for d in &test_mem.data {
+                    mem[start as usize] = *d;
+                    start += 1;
+                }
             }
-        }
 
-        let mut cpu = CPU::new();
+            let mut cpu = CPU::new();
 
-        cpu.regs.set_all_regs(test.registers);
+            cpu.regs.set_all_regs(test.registers);
 
-        for _ in 0..result.aux_rgs.ts {
-            match cpu.signals.mem {
-                SignalReq::Read => {
-                    cpu.signals.data = mem[cpu.signals.addr as usize];
-                    println!("\tMR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+            for _ in 0..result.aux_rgs.ts {
+                match cpu.signals.mem {
+                    SignalReq::Read => {
+                        cpu.signals.data = mem[cpu.signals.addr as usize];
+                        println!("\tMR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    }
+                    SignalReq::Write => {
+                        mem[cpu.signals.addr as usize] = cpu.signals.data;
+                        println!("\tMW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    }
+                    SignalReq::None => (),
                 }
-                SignalReq::Write => {
-                    mem[cpu.signals.addr as usize] = cpu.signals.data;
-                    println!("\tMW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                match cpu.signals.port {
+                    SignalReq::Read => {
+                        cpu.signals.data = (cpu.signals.addr >> 8) as u8;
+                        println!("\tPR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    }
+                    SignalReq::Write => {
+                        println!("\tPW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+                    }
+                    SignalReq::None => (),
                 }
-                SignalReq::None => (),
+                cpu.tick();
             }
-            match cpu.signals.port {
-                SignalReq::Read => {
-                    cpu.signals.data = cpu.signals.addr as u8;
-                    println!("\tPR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
-                }
-                SignalReq::Write => {
-                    println!("\tPW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
-                }
-                SignalReq::None => (),
+            println!("------------");
+            let cpu_regs = cpu.regs.dump_registers();
+            let res_regs = result.registers.map(|d| format!("{:04x}", d)).join(" ");
+            let cpu_f = format!("{:08b}", cpu.regs.f.get());
+            let res_f = format!("{:08b}", result.registers[0] as u8);
+            assert_eq!(cpu_f, res_f, "flags fail !!!");
+            assert_eq!(cpu_regs, res_regs, "regs fail !!!");
+            for m in result.memory.iter() {
+                let cpu_mem = &mem[(m.start)..(m.start + m.data.len())];
+                assert_eq!(cpu_mem, m.data, "mem '{:04x}' fail !!!", m.start);
             }
-            cpu.tick();
-        }
-        println!("------------");
-        let cpu_regs = cpu.regs.dump_registers();
-        let res_regs = result.registers.map(|d| format!("{:04x}", d)).join(" ");
-        let cpu_f = format!("{:08b}", cpu.regs.f.get());
-        let res_f = format!("{:08b}", result.registers[0] as u8);
-        assert_eq!(cpu_f, res_f, "flags fail !!!");
-        assert_eq!(cpu_regs, res_regs, "regs fail !!!");
-        for m in result.memory.iter() {
-            let cpu_mem = &mem[(m.start)..(m.start + m.data.len())];
-            assert_eq!(cpu_mem, m.data, "mem '{:04x}' fail !!!", m.start);
-        }
-        assert!(
-            matches!(cpu.current_ops, None),
-            "current_ops not None !!! {:?}",
-            cpu.current_ops
-        );
-        assert!(
-            cpu.scheduler.is_empty(),
-            "scheduler not empty !!! {:?}",
-            cpu.scheduler
-        );
-        println!("------------\n");
-    }
+            assert!(
+                matches!(cpu.current_ops, None),
+                "current_ops not None !!! {:?}",
+                cpu.current_ops
+            );
+            assert!(
+                cpu.scheduler.is_empty(),
+                "scheduler not empty !!! {:?}",
+                cpu.scheduler
+            );
+            println!("------------\n");
+        });
 }
 
 fn read_tests(path: PathBuf) -> Vec<TestDefinition> {
@@ -183,4 +193,93 @@ fn parse_aux_regs(aux: String) -> AuxRegs {
         halt: res[5] == 1,
         ts: u16::from_str_radix(aux.split_whitespace().last().unwrap(), 10).unwrap(),
     };
+}
+
+#[test]
+fn test_zexdoc() {
+    let path = env::current_dir()
+        .unwrap()
+        .join("tests")
+        .join("zexdocsmall.cim");
+    let mut f = match File::open(path) {
+        Ok(f) => f,
+        Err(err) => {
+            panic!("error!! {}", err);
+        }
+    };
+    let mut zexdoc = Vec::new();
+    match f.read_to_end(&mut zexdoc) {
+        Ok(_) => (),
+        Err(err) => {
+            panic!("error!! {}", err);
+        }
+    };
+
+    let mut mem = vec![0; 0x0100];
+    mem.extend_from_slice(&zexdoc);
+    mem.extend(vec![0; 0x10000 - mem.len()]);
+    mem[0x0005] = 0xc9;
+
+    let mut screen: Vec<u8> = Vec::new();
+
+    let mut cpu = CPU::new();
+
+    cpu.regs.pc = 0x0100;
+
+    while cpu.regs.pc != 0x0000 {
+        // for _ in 0..200 {
+        // println!("->pc {:04x} ", cpu.regs.pc);
+
+        if cpu.regs.pc == 0x0005 && cpu.current_ops.is_none() && cpu.scheduler.is_empty() {
+            println!("op_code: {:?}", cpu.scheduler);
+            print_char(cpu.regs, &mem, &mut screen);
+        }
+
+        match cpu.signals.mem {
+            SignalReq::Read => {
+                cpu.signals.data = mem[cpu.signals.addr as usize];
+                // println!("\tMR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+            }
+            SignalReq::Write => {
+                mem[cpu.signals.addr as usize] = cpu.signals.data;
+                // println!("\tMW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
+            }
+            SignalReq::None => (),
+        }
+        match cpu.signals.port {
+            SignalReq::Read => {
+                // println!("\tPR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data);
+                panic!("port read")
+            }
+            SignalReq::Write => {
+                // println!("\tPW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data);
+            }
+            SignalReq::None => (),
+        }
+        cpu.tick();
+    }
+}
+
+// Emulate CP/M call 5; function is in register C.
+// Function 2: print char in register E
+// Function 9: print $ terminated string pointer in DE
+fn print_char(mut regs: Registers, memory: &[u8], cpm_screen: &mut Vec<u8>) {
+    match regs.c {
+        2 => {
+            cpm_screen.push(regs.get_r(3));
+            print!("{}", regs.get_r(3) as char);
+        }
+        9 => {
+            let de = regs.get_rr(1) as usize;
+            for addr in de..memory.len() {
+                let ch = memory[addr];
+                if ch == b'$' {
+                    break;
+                }
+                cpm_screen.push(ch);
+                print!("{}", ch as char);
+            }
+        }
+        _ => {}
+    }
 }

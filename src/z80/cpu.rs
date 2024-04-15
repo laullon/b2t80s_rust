@@ -133,7 +133,6 @@ impl CPU {
                     Operation::PrR(addr, r) => self.pr_r(addr, r),
                 };
                 if done {
-                    println!("{} {:?}", self.current_ops_ts, self.current_ops);
                     self.current_ops = None;
                     self.current_ops_ts = 0;
                     if self.scheduler.is_empty() {
@@ -156,19 +155,37 @@ impl CPU {
         let p = y >> 1;
         let q = y & 0b00000001;
 
-        println!(
-            "\t{} - pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
-            self.fetched.decode_step, self.fetched.prefix, op_code, x, y, z, p, q
-        );
+        // println!(
+        //     "\t{} - pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{}",
+        //     self.fetched.decode_step, self.fetched.prefix, op_code, x, y, z, p, q
+        // );
         match (self.fetched.prefix, x) {
             (0 | 0xdd | 0xfd, 0) => self.x0_ops(z, y, q, p),
             (0 | 0xdd | 0xfd, 1) => self.x1_ops(y, z),
             (0 | 0xdd | 0xfd, 2) => alu(self, x, y, z),
             (0 | 0xdd | 0xfd, 3) => self.x3_ops(z, y, q, p),
             (0xcb | 0xddcb | 0xfdcb, _) => self.cb_ops(x, y, z),
+            (0xed, _) => self.ed_ops(x, y, z, q, p),
             _ => todo!("decode_and_run x:{}", x),
         }
         self.fetched.decode_step += 1;
+    }
+
+    fn ed_ops(&mut self, x: u8, y: u8, z: u8, q: u8, p: u8) {
+        match (x, z, y, q) {
+            (1, 0, 6, _) => in_c(self),
+            (1, 0, _, _) => in_r_c(self, y),
+            (1, 1, 6, _) => out_c(self),
+            (1, 1, _, _) => out_c_r(self, y),
+            (1, 2, _, 0) => sbc_hl(self, self.regs.get_rr(p)),
+            (1, 3, _, 0) => ld_nn_rr(self, p),
+            (1, 4, _, 0) => {
+                let n = self.regs.a;
+                self.regs.a = 0;
+                sub_a(self, n);
+            }
+            _ => todo!("ed_ops x:{} y:{} z:{} q:{} p:{}", x, y, z, q, p),
+        }
     }
 
     fn cb_ops(&mut self, x: u8, y: u8, z: u8) {
@@ -236,7 +253,6 @@ impl CPU {
     }
 
     fn rot(&mut self, y: u8, z: u8) {
-        println!("rot");
         let mut v = None;
         match (z, self.fetched.n, self.regs.index_mode) {
             (6, None, IndexMode::Hl) => {
@@ -320,7 +336,7 @@ impl CPU {
         match (q, p) {
             (0, _) => push(self, p),
             (1, 0) => call(self, None),
-            (1, 1 | 3) => self.scheduler.push(Operation::Fetch),
+            (1, 1 | 2 | 3) => self.scheduler.push(Operation::Fetch),
             _ => unreachable!("Invalid x3_z5 instruction ({}, {})", q, p),
         }
     }
@@ -393,7 +409,6 @@ impl CPU {
                     match y {
                         2 => {
                             self.regs.b = self.regs.b.wrapping_sub(1);
-                            println!("=> b: {}", self.regs.b);
                             jump = self.regs.b != 0;
                             self.scheduler.push(Operation::Delay(1));
                         }
@@ -406,7 +421,6 @@ impl CPU {
                     }
                     if jump {
                         let jump = self.fetched.n.unwrap() as i8;
-                        println!("pc:{} jump{}", self.regs.pc, jump);
                         self.regs.pc = self.regs.pc.wrapping_add(jump as u16);
                         self.scheduler.push(Operation::Delay(5));
                     }
@@ -521,7 +535,6 @@ impl CPU {
 
     fn fetch(self: &mut Self) -> bool {
         self.current_ops_ts += 1;
-        // println!("> [fetch] {}", self.current_ops_ts);
         match self.current_ops_ts {
             1 => {
                 self.regs.m1 = true;
@@ -608,6 +621,15 @@ impl CPU {
             3 => {
                 self.regs.set_r(r, self.signals.data);
                 self.signals.port = SignalReq::None;
+
+                if r != 7 {
+                    self.regs.f.n = false;
+                    self.regs.f.h = false;
+                    self.regs.f.p = PARITY_TABLE[self.signals.data as usize];
+                    self.regs.f.z = self.signals.data == 0;
+                    self.regs.f.s = self.signals.data & 0x0080 != 0;
+                }
+
                 return true;
             }
             _ => panic!(),
@@ -689,7 +711,6 @@ impl CPU {
 
     fn mw_16(self: &mut Self, addr: u16, data: u16) -> bool {
         self.current_ops_ts += 1;
-        println!("[mw_16] {}", self.current_ops_ts);
         match self.current_ops_ts {
             1 => {
                 self.signals.addr = addr;

@@ -51,7 +51,7 @@ pub enum Operation {
     MrAddrR(u16, u8),
     Delay(u8),
     Pw8(u16, u8),
-    PrR(u16, u8),
+    PrR(u16, Option<u8>, bool),
     MrPcD,
 }
 
@@ -110,6 +110,7 @@ impl CPU {
                     self.fetched.nn = None;
                     self.fetched.d = None;
                     self.fetched.decode_step = 0;
+                    self.fetched.prefix = 0;
                     self.current_ops = Some(Operation::Fetch);
                 }
             } else {
@@ -130,7 +131,7 @@ impl CPU {
                     Operation::MrAddrR(addr, r) => self.mr_addr_r(addr, r),
                     Operation::Delay(delay) => self.delay(delay),
                     Operation::Pw8(addr, data) => self.pw_8(addr, data),
-                    Operation::PrR(addr, r) => self.pr_r(addr, r),
+                    Operation::PrR(addr, r, flags) => self.pr_r(addr, r, flags),
                 };
                 if done {
                     println!(
@@ -252,6 +253,7 @@ impl CPU {
             (1, 7, 4, _) => rdd(self),
             (1, 7, 5, _) => rld(self),
             (1, 7, 6 | 7, _) => {}
+            (2, _, _, _) => bli(self, y, z),
             _ => todo!("ed_ops x:{} y:{} z:{} q:{} p:{}", x, y, z, q, p),
         }
     }
@@ -670,16 +672,19 @@ impl CPU {
         false
     }
 
-    fn pr_r(self: &mut Self, addr: u16, r: u8) -> bool {
+    fn pr_r(self: &mut Self, addr: u16, r: Option<u8>, flags: bool) -> bool {
         self.current_ops_ts += 1;
         match self.current_ops_ts {
             1 => self.signals.addr = addr,
             2 => self.signals.port = SignalReq::Read,
             3 => {
-                self.regs.set_r(r, self.signals.data);
+                match r {
+                    Some(r) => self.regs.set_r(r, self.signals.data),
+                    _ => self.fetched.n = Some(self.signals.data),
+                }
                 self.signals.port = SignalReq::None;
 
-                if r != 7 {
+                if flags {
                     self.regs.f.n = false;
                     self.regs.f.h = false;
                     self.regs.f.p = PARITY_TABLE[self.signals.data as usize];

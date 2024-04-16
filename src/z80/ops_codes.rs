@@ -557,8 +557,8 @@ pub fn srl(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
     res
 }
 
-pub fn bit(cpu: &mut CPU, y: u8, v: u8) -> u8 {
-    let bit = y as u8;
+pub fn bit(cpu: &mut CPU, bit: u8, v: u8) -> u8 {
+    println!("bit {} {}", bit, v);
     let v = v & 1 << bit;
     cpu.regs.f.n = false;
     cpu.regs.f.h = true;
@@ -598,7 +598,7 @@ pub fn in_na(cpu: &mut CPU) {
         Some(n) => {
             let port = (cpu.regs.a as u16) << 8 | n as u16;
             cpu.scheduler.push(Operation::Delay(1));
-            cpu.scheduler.push(Operation::PrR(port, 7));
+            cpu.scheduler.push(Operation::PrR(port, Some(7), false));
             cpu.fetched.op_code = None;
         }
     }
@@ -621,16 +621,23 @@ pub fn ex_sp_hl(cpu: &mut CPU) {
 }
 
 pub fn in_c(cpu: &mut CPU) {
-    todo!()
-}
-
-pub fn in_r_c(cpu: &mut CPU, r: u8) {
-    cpu.scheduler.push(Operation::PrR(cpu.regs.get_rr(0), r));
+    cpu.scheduler
+        .push(Operation::PrR(cpu.regs.get_rr(0), None, true));
     cpu.scheduler.push(Operation::Delay(1));
     cpu.fetched.op_code = None;
 }
+
+pub fn in_r_c(cpu: &mut CPU, r: u8) {
+    cpu.scheduler
+        .push(Operation::PrR(cpu.regs.get_rr(0), Some(r), true));
+    cpu.scheduler.push(Operation::Delay(1));
+    cpu.fetched.op_code = None;
+}
+
 pub fn out_c(cpu: &mut CPU) {
-    todo!()
+    cpu.scheduler.push(Operation::Pw8(cpu.regs.get_rr(0), 0));
+    cpu.scheduler.push(Operation::Delay(1));
+    cpu.fetched.op_code = None;
 }
 
 pub fn out_c_r(cpu: &mut CPU, r: u8) {
@@ -697,16 +704,24 @@ pub fn ld_nn_rr(cpu: &mut CPU, p: u8) {
 }
 
 pub fn ld_rr_nn(cpu: &mut CPU, p: u8) {
-    match cpu.fetched.nn {
-        None => {
+    println!("step {}", cpu.fetched.decode_step);
+    match cpu.fetched.decode_step {
+        0 => {
             cpu.scheduler.push(Operation::MrPcN);
             cpu.scheduler.push(Operation::MrPcN);
         }
-        Some(nn) => {
-            cpu.fetched.op_code = None;
-            cpu.scheduler.push(Operation::MrAddrR(nn, (p * 2) + 1));
-            cpu.scheduler.push(Operation::MrAddrR(nn + 1, p * 2));
+        1 => {
+            cpu.scheduler
+                .push(Operation::MrAddrN(cpu.fetched.nn.unwrap()));
+            cpu.scheduler
+                .push(Operation::MrAddrN(cpu.fetched.nn.unwrap().wrapping_add(1)));
+            cpu.fetched.n = None;
+            cpu.fetched.nn = None;
         }
+        2 => {
+            cpu.regs.set_rr(p, cpu.fetched.nn.unwrap());
+        }
+        _ => unreachable!("Invalid ld_rr_nn instruction"),
     }
 }
 
@@ -768,4 +783,209 @@ pub fn ld_a_ir_flags(cpu: &mut CPU) {
     cpu.regs.f.p = cpu.regs.iff2;
     cpu.regs.f.h = false;
     cpu.regs.f.n = false;
+}
+
+pub fn bli(cpu: &mut CPU, a: u8, b: u8) {
+    match (a, b) {
+        (4, 0) => ldi_ldd(cpu, false),
+        (4, 1) => cpi_cpd(cpu, false),
+        (4, 2) => ini_ind(cpu, false),
+        (4, 3) => outi_outd(cpu, false),
+        (5, 0) => ldi_ldd(cpu, true),
+        (5, 1) => cpi_cpd(cpu, true),
+        (5, 2) => ini_ind(cpu, true),
+        (5, 3) => outi_outd(cpu, true),
+        (6, 0) => ldir_lddr(cpu, false),
+        (6, 1) => cpir_cpdr(cpu, false),
+        (6, 2) => inir_indr(cpu, false),
+        (6, 3) => otir_otdr(cpu, false),
+        (7, 0) => ldir_lddr(cpu, true),
+        (7, 1) => cpir_cpdr(cpu, true),
+        (7, 2) => inir_indr(cpu, true),
+        (7, 3) => otir_otdr(cpu, true),
+        _ => unreachable!("Invalid bli instruction"),
+    }
+}
+
+fn otir_otdr(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 | 1 => {
+            outi_outd(cpu, sub);
+        }
+        2 => {
+            outi_outd(cpu, sub);
+            if !cpu.regs.f.z {
+                cpu.scheduler.push(Operation::Delay(5))
+            }
+        }
+        3 => {
+            cpu.regs.pc = cpu.regs.pc.wrapping_sub(2);
+        }
+        _ => unreachable!("Invalid inir_indr instruction"),
+    }
+}
+
+fn inir_indr(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 | 1 => {
+            ini_ind(cpu, sub);
+        }
+        2 => {
+            ini_ind(cpu, sub);
+            if !cpu.regs.f.z {
+                cpu.scheduler.push(Operation::Delay(5))
+            }
+        }
+        3 => {
+            cpu.regs.pc = cpu.regs.pc.wrapping_sub(2);
+        }
+        _ => unreachable!("Invalid inir_indr instruction"),
+    }
+}
+
+fn cpir_cpdr(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 | 1 => {
+            cpi_cpd(cpu, sub);
+        }
+        2 => {
+            cpi_cpd(cpu, sub);
+            if cpu.regs.f.p && !cpu.regs.f.z {
+                cpu.scheduler.push(Operation::Delay(5))
+            }
+        }
+        3 => {
+            cpu.regs.pc = cpu.regs.pc.wrapping_sub(2);
+        }
+        _ => unreachable!("Invalid cpir_cpdr instruction"),
+    }
+}
+
+fn ldir_lddr(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 | 1 => {
+            ldi_ldd(cpu, sub);
+        }
+        2 => {
+            ldi_ldd(cpu, sub);
+            if cpu.regs.f.p {
+                cpu.scheduler.push(Operation::Delay(5))
+            }
+        }
+        3 => {
+            cpu.regs.pc = cpu.regs.pc.wrapping_sub(2);
+        }
+        _ => unreachable!("Invalid ldir instruction"),
+    }
+}
+
+fn outi_outd(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 => {
+            cpu.scheduler.push(Operation::Delay(1));
+            cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(0)))
+        }
+        1 => {
+            cpu.regs.set_r(0, cpu.regs.get_r(0).wrapping_sub(1));
+            cpu.scheduler
+                .push(Operation::Pw8(cpu.regs.get_rr(0), cpu.fetched.n.unwrap()));
+            cpu.scheduler.push(Operation::Delay(1));
+        }
+        2 => {
+            if sub {
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_sub(1));
+            } else {
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_add(1));
+            }
+            let b = cpu.regs.get_r(0);
+            cpu.regs.f.z = b == 0;
+            cpu.regs.f.s = b & 0x80 != 0;
+            cpu.regs.f.n = b & 0x80 == 0;
+            cpu.regs.f.h = true;
+            cpu.regs.f.p = PARITY_TABLE[b as usize];
+        }
+        _ => unreachable!("Invalid outi instruction"),
+    }
+}
+
+fn ini_ind(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 => {
+            cpu.scheduler.push(Operation::Delay(1));
+            cpu.scheduler
+                .push(Operation::PrR(cpu.regs.get_rr(0), None, true))
+        }
+        1 => {
+            cpu.scheduler
+                .push(Operation::Mw8(cpu.regs.get_rr(2), cpu.fetched.n.unwrap()));
+            cpu.scheduler.push(Operation::Delay(1));
+        }
+        2 => {
+            cpu.regs.set_r(0, cpu.regs.get_r(0).wrapping_sub(1));
+            if sub {
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_sub(1));
+            } else {
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_add(1));
+            }
+            cpu.regs.f.n = true;
+            cpu.regs.f.z = cpu.regs.get_r(0) == 0;
+        }
+        _ => unreachable!("Invalid ini_ind instruction"),
+    }
+}
+
+fn cpi_cpd(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
+        1 => {
+            cpu.scheduler.push(Operation::Delay(5));
+        }
+        2 => {
+            let data = cpu.fetched.n.unwrap();
+            let result = cpu.regs.a.wrapping_sub(data);
+
+            cpu.regs.set_rr(0, cpu.regs.get_rr(0).wrapping_sub(1));
+            if sub {
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_sub(1));
+            } else {
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_add(1));
+            }
+
+            let lookup = (cpu.regs.a & 0x08) >> 3 | (data & 0x08) >> 2 | (result & 0x08) >> 1;
+            cpu.regs.f.h = HALFCARRY_SUB_TABLE[lookup as usize];
+            cpu.regs.f.s = result & 0x80 != 0;
+            cpu.regs.f.z = result == 0;
+            cpu.regs.f.p = cpu.regs.get_rr(0) != 0;
+            cpu.regs.f.n = true;
+        }
+        _ => unreachable!("Invalid cpi instruction"),
+    }
+}
+
+fn ldi_ldd(cpu: &mut CPU, sub: bool) {
+    match cpu.fetched.decode_step {
+        0 => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
+        1 => {
+            cpu.scheduler.push(Operation::Delay(2));
+            cpu.scheduler
+                .push(Operation::Mw8(cpu.regs.get_rr(1), cpu.fetched.n.unwrap()));
+        }
+        2 => {
+            if sub {
+                cpu.regs.set_rr(1, cpu.regs.get_rr(1).wrapping_sub(1));
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_sub(1));
+            } else {
+                cpu.regs.set_rr(1, cpu.regs.get_rr(1).wrapping_add(1));
+                cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_add(1));
+            }
+            cpu.regs.set_rr(0, cpu.regs.get_rr(0).wrapping_sub(1));
+
+            cpu.regs.f.p = cpu.regs.get_rr(0) != 0;
+            cpu.regs.f.h = false;
+            cpu.regs.f.n = false;
+
+            // }
+        }
+        _ => unreachable!("Invalid ldi instruction"),
+    }
 }

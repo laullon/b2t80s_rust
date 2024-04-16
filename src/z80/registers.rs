@@ -127,7 +127,7 @@ impl Registers {
         self.f_.set(v as u8);
     }
 
-    pub fn get_r(&mut self, r: u8) -> u8 {
+    pub fn get_r(&self, r: u8) -> u8 {
         match r {
             0 => self.b,
             1 => self.c,

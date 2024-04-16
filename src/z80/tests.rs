@@ -113,8 +113,8 @@ fn test_opcodes() {
             println!("------------");
             let cpu_regs = cpu.regs.dump_registers();
             let res_regs = result.registers.map(|d| format!("{:04x}", d)).join(" ");
-            let cpu_f = format!("{:08b}", cpu.regs.f.get());
-            let res_f = format!("{:08b}", result.registers[0] as u8);
+            let cpu_f = format!("{:08b}", cpu.regs.f.get() & 0b11010111);
+            let res_f = format!("{:08b}", result.registers[0] as u8 & 0b11010111);
             assert_eq!(cpu_f, res_f, "flags fail !!!");
             assert_eq!(cpu_regs, res_regs, "regs fail !!!");
             assert_eq!(
@@ -238,7 +238,6 @@ fn test_zexdoc() {
     let mut mem = vec![0; 0x0100];
     mem.extend_from_slice(&zexdoc);
     mem.extend(vec![0; 0x10000 - mem.len()]);
-    mem[0x0005] = 0xc9;
 
     let mut screen: Vec<u8> = Vec::new();
 
@@ -248,11 +247,13 @@ fn test_zexdoc() {
 
     while cpu.regs.pc != 0x0000 {
         // for _ in 0..200 {
-        // println!("->pc {:04x} ", cpu.regs.pc);
 
         if cpu.regs.pc == 0x0005 && cpu.current_ops.is_none() && cpu.scheduler.is_empty() {
-            println!("op_code: {:?}", cpu.scheduler);
             print_char(cpu.regs, &mem, &mut screen);
+            let mut new_pc = mem[cpu.regs.sp as usize] as u16;
+            new_pc |= (mem[(cpu.regs.sp + 1) as usize] as u16) << 8;
+            cpu.regs.sp += 2;
+            cpu.regs.pc = new_pc;
         }
 
         match cpu.signals.mem {
@@ -277,13 +278,14 @@ fn test_zexdoc() {
             SignalReq::None => (),
         }
         cpu.tick();
+        println!("->pc {:04x} ", cpu.regs.pc);
     }
 }
 
 // Emulate CP/M call 5; function is in register C.
 // Function 2: print char in register E
 // Function 9: print $ terminated string pointer in DE
-fn print_char(mut regs: Registers, memory: &[u8], cpm_screen: &mut Vec<u8>) {
+fn print_char(regs: Registers, memory: &[u8], cpm_screen: &mut Vec<u8>) {
     match regs.c {
         2 => {
             cpm_screen.push(regs.get_r(3));

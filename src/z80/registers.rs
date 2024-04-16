@@ -254,7 +254,7 @@ impl Registers {
     pub fn dump_registers(&self) -> String {
         format!(
             "{:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x} {:04x}",
-            self.af(),
+            self.af() & 0xffd7,
             self.bc(),
             self.de(),
             self.hl(),

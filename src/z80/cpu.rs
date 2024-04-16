@@ -283,7 +283,6 @@ impl CPU {
             }
             (_, Some(n), _) => v = Some(n),
             (_, None, _) => v = Some(self.regs.get_r(z)),
-            _ => unreachable!("Invalid bit instruction (r)"),
         }
 
         let mut r = None;
@@ -335,7 +334,6 @@ impl CPU {
             }
             (_, Some(n), _) => v = Some(n),
             (_, None, _) => v = Some(self.regs.get_r(z)),
-            _ => unreachable!("Invalid rot instruction (r)"),
         }
 
         let mut res = None;
@@ -400,6 +398,14 @@ impl CPU {
                 self.regs.set_rr(2, self.regs.get_rr(1));
                 self.regs.set_rr(1, hl);
             }
+            6 => {
+                self.regs.iff1 = false;
+                self.regs.iff2 = false;
+            }
+            7 => {
+                self.regs.iff1 = true;
+                self.regs.iff2 = true;
+            }
             _ => unreachable!("Invalid x3_z3 instruction y={}", y),
         }
     }
@@ -436,8 +442,8 @@ impl CPU {
             3 => self.regs.f.c == true,
             4 => self.regs.f.p == false,
             5 => self.regs.f.p == true,
-            6 => self.regs.f.n == false,
-            7 => self.regs.f.c == true,
+            6 => self.regs.f.s == false,
+            7 => self.regs.f.s == true,
             _ => unreachable!(),
         }
     }

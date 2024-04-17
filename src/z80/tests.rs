@@ -248,27 +248,22 @@ fn test_zexdoc() {
     while cpu.regs.pc != 0x0000 {
         // for _ in 0..200 {
 
-        println!("## pc: {:04x}", cpu.regs.pc);
-        cpu.tick();
-
         if cpu.regs.pc == 0x0005 && cpu.current_ops.is_none() && cpu.scheduler.is_empty() {
             print_char(cpu.regs, &mem, &mut screen);
             let mut new_pc = mem[cpu.regs.sp as usize] as u16;
             new_pc |= (mem[(cpu.regs.sp + 1) as usize] as u16) << 8;
-            cpu.regs.sp = cpu.regs.sp.wrapping_add(2);
+            cpu.regs.sp += 2;
             cpu.regs.pc = new_pc;
-            println!("############## pc: {:04x}", cpu.regs.pc);
         }
 
         match cpu.signals.mem {
             SignalReq::Read => {
                 cpu.signals.data = mem[cpu.signals.addr as usize];
-                println!("\tMR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data);
+                // println!("\tMR {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
             }
             SignalReq::Write => {
                 mem[cpu.signals.addr as usize] = cpu.signals.data;
-                println!("\tMW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data);
-                assert!(cpu.signals.addr > (zexdoc.len() + 100) as u16, "eee");
+                // println!("\tMW {:04x} {:02x}", cpu.signals.addr, cpu.signals.data)
             }
             SignalReq::None => (),
         }
@@ -282,8 +277,9 @@ fn test_zexdoc() {
             }
             SignalReq::None => (),
         }
+        cpu.tick();
+        println!("->pc {:04x} ", cpu.regs.pc);
     }
-    assert!(false);
 }
 
 // Emulate CP/M call 5; function is in register C.

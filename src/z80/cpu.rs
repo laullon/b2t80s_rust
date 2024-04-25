@@ -1,24 +1,11 @@
+use std::default;
+
+use crate::signals::{SignalReq, Signals};
+
 use super::{
     ops_codes::*,
     registers::{IndexMode, Registers},
 };
-
-pub fn hello() -> String {
-    "Hello!".to_string()
-}
-
-pub enum SignalReq {
-    Read,
-    Write,
-    None,
-}
-
-pub struct Signals {
-    pub addr: u16,
-    pub data: u8,
-    pub mem: SignalReq,
-    pub port: SignalReq,
-}
 
 pub struct CPU {
     pub regs: Registers,
@@ -26,12 +13,12 @@ pub struct CPU {
     pub fetched: Fetched,
     pub scheduler: Vec<Operation>,
     pub wait: bool,
-    pub do_interrupt: bool,
     pub halt: bool,
     pub current_ops: Option<Operation>,
     pub current_ops_ts: u8,
 }
 
+#[derive(Default)]
 pub struct Fetched {
     pub op_code: Option<u8>,
     prefix: u16,
@@ -53,6 +40,8 @@ pub enum Operation {
     Pw8(u16, u8),
     PrR(u16, Option<u8>, bool),
     MrPcD,
+    Int01,
+    Int02,
 }
 
 impl CPU {
@@ -62,20 +51,13 @@ impl CPU {
             signals: Signals {
                 addr: 0,
                 data: 0,
+                interrupt: false,
                 mem: SignalReq::None,
                 port: SignalReq::None,
             },
-            fetched: Fetched {
-                op_code: None,
-                prefix: 0,
-                n: None,
-                nn: None,
-                d: None,
-                decode_step: 0,
-            },
+            fetched: Fetched::default(),
             scheduler: Vec::new(),
             wait: false,
-            do_interrupt: false,
             halt: false,
             current_ops: Some(Operation::Fetch),
             current_ops_ts: 0,
@@ -88,10 +70,10 @@ impl CPU {
         }
 
         if self.halt {
-            if self.do_interrupt {
+            if self.signals.interrupt {
                 self.halt = false;
                 self.regs.pc += 1;
-                self.exec_interrupt()
+                // self.exec_interrupt()
             } else {
                 return;
             }
@@ -99,18 +81,16 @@ impl CPU {
 
         if matches!(self.current_ops, None) {
             if self.scheduler.is_empty() {
+                // println!("{:#06x}", self.regs.pc);
                 // if self.log != nil {
                 //     self.log.AppendLastOP(self.fetched.getInstruction())
                 // }
-                if self.do_interrupt {
-                    self.exec_interrupt()
+                self.fetched = Fetched::default();
+                self.regs.index_mode = IndexMode::Hl;
+
+                if self.signals.interrupt && self.regs.iff1 {
+                    self.current_ops = Some(Operation::Int01);
                 } else {
-                    self.fetched.op_code = None;
-                    self.fetched.n = None;
-                    self.fetched.nn = None;
-                    self.fetched.d = None;
-                    self.fetched.decode_step = 0;
-                    self.fetched.prefix = 0;
                     self.current_ops = Some(Operation::Fetch);
                 }
             } else {
@@ -132,12 +112,14 @@ impl CPU {
                     Operation::Delay(delay) => self.delay(delay),
                     Operation::Pw8(addr, data) => self.pw_8(addr, data),
                     Operation::PrR(addr, r, flags) => self.pr_r(addr, r, flags),
+                    Operation::Int01 => self.int01(),
+                    Operation::Int02 => self.int02(),
                 };
                 if done {
-                    println!(
-                        "-- done -- op: {:?} - {}",
-                        self.current_ops, self.current_ops_ts
-                    );
+                    // println!(
+                    //     "-- done -- op: {:?} - {}",
+                    //     self.current_ops, self.current_ops_ts
+                    // );
                     self.current_ops = None;
                     self.current_ops_ts = 0;
                     if self.scheduler.is_empty() {
@@ -194,10 +176,10 @@ impl CPU {
         let p = y >> 1;
         let q = y & 0b00000001;
 
-        println!(
-            "<<< pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{} >>>",
-            self.fetched.prefix, op_code, x, y, z, p, q
-        );
+        // println!(
+        //     "<<< pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{} >>>",
+        //     self.fetched.prefix, op_code, x, y, z, p, q
+        // );
 
         match (self.fetched.prefix, x) {
             (0xcb | 0xddcb | 0xfdcb, _) => self.cb_ops(x, y, z),
@@ -603,14 +585,6 @@ impl CPU {
         self.scheduler.push(Operation::Delay(2));
     }
 
-    fn exec_interrupt(&self) {
-        todo!()
-    }
-
-    // fn new_instruction(&self) {
-    //     todo!()
-    // }
-
     fn fetch(self: &mut Self) -> bool {
         self.current_ops_ts += 1;
         match self.current_ops_ts {
@@ -618,7 +592,7 @@ impl CPU {
                 self.regs.m1 = true;
                 self.signals.addr = self.regs.pc;
                 self.signals.mem = SignalReq::Read;
-                self.regs.pc += 1;
+                self.regs.pc = self.regs.pc.wrapping_add(1);
                 self.regs.r = (self.regs.r & 0x80) | ((self.regs.r.wrapping_add(1)) & 0x7f);
             }
             2 => {
@@ -812,5 +786,18 @@ impl CPU {
             "i: {}, r: {}, iff1: {}, iff2: {}, im: {}, halt: {}",
             self.regs.i, self.regs.r, self.regs.iff1, self.regs.iff2, self.regs.im, self.halt
         )
+    }
+
+    fn int01(&mut self) -> bool {
+        self.regs.iff1 = false;
+        self.regs.sp = self.regs.sp.wrapping_add(2);
+        self.scheduler
+            .push(Operation::Mw16(self.regs.sp, self.regs.pc));
+        self.regs.pc = 0x0038;
+        return true;
+    }
+
+    fn int02(&self) -> bool {
+        todo!()
     }
 }

@@ -7,7 +7,7 @@ use std::{
 };
 use std::{io::Read, iter::zip};
 
-use crate::z80::{cpu::SignalReq, cpu::CPU};
+use crate::{signals::SignalReq, z80::cpu::CPU};
 
 use super::registers::Registers;
 
@@ -108,6 +108,7 @@ fn test_opcodes() {
                     }
                     SignalReq::None => (),
                 }
+                println!("pc: {:04x}", cpu.regs.pc);
                 cpu.tick();
             }
             println!("------------");
@@ -136,6 +137,7 @@ fn test_opcodes() {
                 "scheduler not empty !!! {:?}",
                 cpu.scheduler
             );
+            assert_ne!(test.name, "7e", "7e fail !!!");
             println!("------------\n");
         });
 }
@@ -161,6 +163,7 @@ fn read_tests(path: PathBuf) -> Vec<TestDefinition> {
                 results.push(test);
                 lines.clear();
             }
+            "-1" => (),
             _ => {
                 if !line.starts_with("  ") {
                     lines.push(line);
@@ -194,8 +197,10 @@ fn parse_regs(regs: String) -> [u16; 12] {
         .split_whitespace()
         .map(|i| u16::from_str_radix(i, 16).unwrap())
         .collect();
+    res.remove(res.len() - 1); // remove last reg (no need it)
     res[0] = res[0] & 0b11111111_11010111; // flags 3&5 removed
     res[4] = res[4] & 0b11111111_11010111; // flags 3&5 removed
+    println!("{:?}", res);
     return res.as_slice().try_into().expect("ERRRRRRR");
 }
 
@@ -278,8 +283,8 @@ fn test_zexdoc() {
             SignalReq::None => (),
         }
         cpu.tick();
-        println!("->pc {:04x} ", cpu.regs.pc);
     }
+    assert!(false);
 }
 
 // Emulate CP/M call 5; function is in register C.

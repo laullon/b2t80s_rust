@@ -62,45 +62,101 @@ pub fn ld_r_n(cpu: &mut CPU, y: u8) {
 }
 
 pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
-    match (y, z, cpu.regs.index_mode, cpu.fetched.d, cpu.fetched.n) {
-        (6, _, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
-        (6, _, IndexMode::Ix | IndexMode::Iy, Some(d), None) => {
-            let addr = cpu.regs.get_idx(d);
-            cpu.regs.index_mode = IndexMode::Hl;
-            cpu.scheduler.push(Operation::Mw8(addr, cpu.regs.get_r(z)));
-            cpu.fetched.op_code = None;
-            cpu.scheduler.push(Operation::Delay(5));
-        }
+    match cpu.regs.index_mode {
+        IndexMode::Hl => match (y, z, cpu.fetched.decode_step) {
+            (6, 6, _) => todo!(),
 
-        (_, 6, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
-        (_, 6, IndexMode::Ix | IndexMode::Iy, Some(d), None) => {
-            cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_idx(d)))
-        }
-        (_, 6, IndexMode::Ix | IndexMode::Iy, Some(_), Some(n)) => {
-            cpu.scheduler.push(Operation::Delay(5));
-            cpu.fetched.op_code = None;
-            cpu.regs.index_mode = IndexMode::Hl;
-            cpu.regs.set_r(y, n);
-        }
+            (_, 6, 0) => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
+            (_, 6, 1) => {
+                cpu.regs.set_r(y, cpu.fetched.n.unwrap());
+                cpu.fetched.op_code = None;
+            }
 
-        (6, _, _, _, _) => {
-            cpu.fetched.op_code = None;
-            cpu.scheduler
-                .push(Operation::Mw8(cpu.regs.get_rr(2), cpu.regs.get_r(z)));
-        }
-        (_, 6, _, _, _) => match cpu.fetched.n {
-            None => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
-            Some(n) => cpu.regs.set_r(y, n),
+            (6, _, 0) => cpu
+                .scheduler
+                .push(Operation::Mw8(cpu.regs.get_rr(2), cpu.regs.get_r(z))),
+            (6, _, 1) => cpu.fetched.op_code = None,
+
+            _ => {
+                let v = cpu.regs.get_r(z);
+                cpu.regs.set_r(y, v);
+            }
         },
-        _ => {
-            let v = cpu.regs.get_r(z);
-            cpu.regs.set_r(y, v);
-        }
-    };
+        _ => match (y, z, cpu.fetched.decode_step) {
+            (6, _, 0) | (_, 6, 0) => cpu.scheduler.push(Operation::MrPcD),
+
+            // LD r[z], (ix+d)
+            (_, 6, 1) => cpu
+                .scheduler
+                .push(Operation::MrAddrN(cpu.regs.get_idx(cpu.fetched.d.unwrap()))),
+            (_, 6, 2) => {
+                if y == 4 || y == 5 {
+                    cpu.regs.index_mode = IndexMode::Hl;
+                }
+                cpu.regs.set_r(y, cpu.fetched.n.unwrap());
+                cpu.scheduler.push(Operation::Delay(5));
+                cpu.fetched.op_code = None;
+            }
+
+            // LD (ix+d), r[z]
+            (6, _, 1) => {
+                let get_idx = cpu.regs.get_idx(cpu.fetched.d.unwrap());
+                if z == 4 || z == 5 {
+                    cpu.regs.index_mode = IndexMode::Hl;
+                }
+                cpu.scheduler
+                    .push(Operation::Mw8(get_idx, cpu.regs.get_r(z)));
+                cpu.scheduler.push(Operation::Delay(5));
+                cpu.fetched.op_code = None;
+            }
+            (6, _, 2) => cpu.fetched.op_code = None,
+
+            _ => {
+                let v = cpu.regs.get_r(z);
+                cpu.regs.set_r(y, v);
+            }
+        },
+    }
+
+    // match (y, z, cpu.regs.index_mode, cpu.fetched.d, cpu.fetched.n) {
+    //     (6, _, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
+    //     (6, _, IndexMode::Ix | IndexMode::Iy, Some(d), None) => {
+    //         let addr = cpu.regs.get_idx(d);
+    //         cpu.regs.index_mode = IndexMode::Hl;
+    //         cpu.scheduler.push(Operation::Mw8(addr, cpu.regs.get_r(z)));
+    //         cpu.fetched.op_code = None;
+    //         cpu.scheduler.push(Operation::Delay(5));
+    //     }
+
+    //     (_, 6, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
+    //     (_, 6, IndexMode::Ix | IndexMode::Iy, Some(d), None) => {
+    //         cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_idx(d)))
+    //     }
+    //     (_, 6, IndexMode::Ix | IndexMode::Iy, Some(_), Some(n)) => {
+    //         cpu.scheduler.push(Operation::Delay(5));
+    //         cpu.fetched.op_code = None;
+    //         cpu.regs.index_mode = IndexMode::Hl;
+    //         cpu.regs.set_r(y, n);
+    //     }
+
+    //     (6, _, _, _, _) => {
+    //         cpu.fetched.op_code = None;
+    //         cpu.scheduler
+    //             .push(Operation::Mw8(cpu.regs.get_rr(2), cpu.regs.get_r(z)));
+    //     }
+    //     (_, 6, _, _, _) => match cpu.fetched.n {
+    //         None => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
+    //         Some(n) => cpu.regs.set_r(y, n),
+    //     },
+    //     _ => {
+    //         let v = cpu.regs.get_r(z);
+    //         cpu.regs.set_r(y, v);
+    //     }
+    // };
 }
 
 pub fn inc_rr(cpu: &mut CPU, p: u8) {
-    let v = cpu.regs.get_rr(p) + 1;
+    let v = cpu.regs.get_rr(p).wrapping_add(1);
     cpu.regs.set_rr(p, v);
 }
 
@@ -584,7 +640,7 @@ pub fn out_na(cpu: &mut CPU) {
     match cpu.fetched.n {
         None => cpu.scheduler.push(Operation::MrPcN),
         Some(n) => {
-            let port = (n as u16) << 8 | cpu.regs.a as u16;
+            let port = (n as u16) | (cpu.regs.a as u16) << 8;
             cpu.scheduler.push(Operation::Delay(1));
             cpu.scheduler.push(Operation::Pw8(port, cpu.regs.a));
             cpu.fetched.op_code = None;
@@ -704,7 +760,6 @@ pub fn ld_nn_rr(cpu: &mut CPU, p: u8) {
 }
 
 pub fn ld_rr_nn(cpu: &mut CPU, p: u8) {
-    println!("step {}", cpu.fetched.decode_step);
     match cpu.fetched.decode_step {
         0 => {
             cpu.scheduler.push(Operation::MrPcN);
@@ -883,7 +938,7 @@ fn outi_outd(cpu: &mut CPU, sub: bool) {
     match cpu.fetched.decode_step {
         0 => {
             cpu.scheduler.push(Operation::Delay(1));
-            cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(0)))
+            cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2)))
         }
         1 => {
             cpu.regs.set_r(0, cpu.regs.get_r(0).wrapping_sub(1));
@@ -897,12 +952,21 @@ fn outi_outd(cpu: &mut CPU, sub: bool) {
             } else {
                 cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_add(1));
             }
+
             let b = cpu.regs.get_r(0);
+            let value = cpu.fetched.n.unwrap();
+            let aux = cpu.regs.get_r(5).wrapping_add(value);
+            let p = (aux & 0x07) ^ b;
+
             cpu.regs.f.z = b == 0;
             cpu.regs.f.s = b & 0x80 != 0;
-            cpu.regs.f.n = b & 0x80 == 0;
-            cpu.regs.f.h = true;
-            cpu.regs.f.p = PARITY_TABLE[b as usize];
+
+            cpu.regs.f.h = aux < value;
+            cpu.regs.f.c = aux < value;
+
+            cpu.regs.f.n = value & 0x80 != 0;
+
+            cpu.regs.f.p = PARITY_TABLE[p as usize];
         }
         _ => unreachable!("Invalid outi instruction"),
     }
@@ -927,8 +991,23 @@ fn ini_ind(cpu: &mut CPU, sub: bool) {
             } else {
                 cpu.regs.set_rr(2, cpu.regs.get_rr(2).wrapping_add(1));
             }
-            cpu.regs.f.n = true;
+
+            let value = cpu.fetched.n.unwrap();
+            let c = cpu.regs.get_r(1);
+            let b = cpu.regs.get_r(0);
+            let aux;
+            if sub {
+                aux = value.wrapping_add(c.wrapping_sub(1));
+            } else {
+                aux = value.wrapping_add(c.wrapping_add(1));
+            }
+            cpu.regs.f.h = aux < c;
+            cpu.regs.f.c = aux < c;
+            cpu.regs.f.n = value & 0x80 != 0;
             cpu.regs.f.z = cpu.regs.get_r(0) == 0;
+
+            let p = (aux & 0x07) ^ b;
+            cpu.regs.f.p = PARITY_TABLE[p as usize];
         }
         _ => unreachable!("Invalid ini_ind instruction"),
     }

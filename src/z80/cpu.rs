@@ -299,10 +299,6 @@ impl CPU {
     }
 
     fn rot(&mut self, y: u8, z: u8) {
-        println!(
-            "rot z:{} n:{:?} mode:{:?}",
-            z, self.fetched.n, self.regs.index_mode
-        );
         let mut v = None;
         match (z, self.fetched.n, self.regs.index_mode) {
             (6, None, IndexMode::Hl) => {

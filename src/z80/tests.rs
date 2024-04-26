@@ -137,7 +137,7 @@ fn test_opcodes() {
                 "scheduler not empty !!! {:?}",
                 cpu.scheduler
             );
-            assert_ne!(test.name, "7e", "7e fail !!!");
+            assert_ne!(test.name, "dde9", "7e fail !!!");
             println!("------------\n");
         });
 }

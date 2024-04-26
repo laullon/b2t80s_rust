@@ -614,7 +614,6 @@ pub fn srl(cpu: &mut CPU, _z: u8, v: u8) -> u8 {
 }
 
 pub fn bit(cpu: &mut CPU, bit: u8, v: u8) -> u8 {
-    println!("bit {} {}", bit, v);
     let v = v & 1 << bit;
     cpu.regs.f.n = false;
     cpu.regs.f.h = true;
@@ -725,7 +724,6 @@ pub fn sbc_hl(cpu: &mut CPU, ss: u16) {
 }
 
 pub fn adc_hl(cpu: &mut CPU, ss: u16) {
-    println!("adc_hl {:04x}", ss);
     let hl = cpu.regs.get_rr(2);
 
     let (result, carry1) = hl.overflowing_add(ss);

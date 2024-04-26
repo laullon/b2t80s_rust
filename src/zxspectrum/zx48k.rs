@@ -41,13 +41,15 @@ impl Machine {
                     // println!("\tMR {:04x} {:02x}", signals.addr, signals.data)
                 }
                 SignalReq::Write => {
-                    assert_ne!(
-                        bank, 0,
-                        "bank 0 write - {:04x} {:02x} - {} - pc: {:04x}",
-                        signals.addr, signals.data, idx, self.cpu.regs.pc
-                    );
-                    self.memory[bank][addr] = signals.data;
-                    // println!("\tMW {:04x} {:02x}", signals.addr, signals.data)
+                    // assert_ne!(
+                    //     bank, 0,
+                    //     "bank 0 write - {:04x} {:02x} - {} - pc: {:04x}",
+                    //     signals.addr, signals.data, idx, self.cpu.regs.pc
+                    // );
+                    if bank != 0 {
+                        self.memory[bank][addr] = signals.data;
+                        // println!("\tMW {:04x} {:02x}", signals.addr, signals.data)
+                    }
                 }
                 SignalReq::None => (),
             }
@@ -56,12 +58,15 @@ impl Machine {
         match self.cpu.signals.port {
             SignalReq::Read => {
                 // self.ula.signals.addr = self.cpu.signals.addr;
-                // self.ula.signals.data = self.cpu.signals.data;
+                self.cpu.signals.data = 0xff;
                 // self.ula.signals.port = SignalReq::Read;
-                panic!(
-                    "port read - {:04x} {:02x} - pc: {:04x}",
-                    self.cpu.signals.addr, self.cpu.signals.data, self.cpu.regs.pc
-                )
+                // panic!(
+                //     "port read - {:04x} ({:16b}) {:02x} - pc: {:04x}",
+                //     self.cpu.signals.addr,
+                //     self.cpu.signals.addr,
+                //     self.cpu.signals.data,
+                //     self.cpu.regs.pc
+                // )
             }
             SignalReq::Write => {
                 self.ula.signals.addr = self.cpu.signals.addr;
@@ -79,11 +84,10 @@ impl Machine {
 }
 
 fn load_rom() -> [u8; 0x4000] {
-    // let path = env::current_dir().unwrap().join("bin").join("48.rom");
-    let path = env::current_dir()
-        .unwrap()
-        .join("bin")
-        .join("DiagROMv.171.rom");
+    let mut path = env::current_dir().unwrap().join("bin");
+    path = path.join("DiagROMv.171.rom");
+    // path = path.join("48.rom");
+
     let mut f = match File::open(path) {
         Ok(f) => f,
         Err(err) => {

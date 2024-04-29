@@ -73,7 +73,6 @@ impl CPU {
             if self.signals.interrupt {
                 self.halt = false;
                 self.regs.pc += 1;
-                // self.exec_interrupt()
             } else {
                 return;
             }
@@ -89,7 +88,11 @@ impl CPU {
                 self.regs.index_mode = IndexMode::Hl;
 
                 if self.signals.interrupt && self.regs.iff1 {
-                    self.current_ops = Some(Operation::Int01);
+                    match self.regs.im {
+                        0 | 1 => self.current_ops = Some(Operation::Int01),
+                        2 => self.current_ops = Some(Operation::Int02),
+                        _ => unreachable!("Invalid interrupt mode"),
+                    }
                 } else {
                     self.current_ops = Some(Operation::Fetch);
                 }
@@ -786,7 +789,8 @@ impl CPU {
 
     fn int01(&mut self) -> bool {
         self.regs.iff1 = false;
-        self.regs.sp = self.regs.sp.wrapping_add(2);
+        self.regs.sp = self.regs.sp.wrapping_sub(2);
+        self.scheduler.push(Operation::Delay(1));
         self.scheduler
             .push(Operation::Mw16(self.regs.sp, self.regs.pc));
         self.regs.pc = 0x0038;

@@ -57,25 +57,35 @@ impl Machine {
 
         match self.cpu.signals.port {
             SignalReq::Read => {
-                // self.ula.signals.addr = self.cpu.signals.addr;
-                self.cpu.signals.data = 0xff;
-                // self.ula.signals.port = SignalReq::Read;
-                // panic!(
-                //     "port read - {:04x} ({:16b}) {:02x} - pc: {:04x}",
-                //     self.cpu.signals.addr,
-                //     self.cpu.signals.addr,
-                //     self.cpu.signals.data,
-                //     self.cpu.regs.pc
-                // )
+                if self.cpu.signals.addr & 0x00e0 == 0x0000 {
+                    //  Kempston joystick
+                    self.cpu.signals.data = 0x00;
+                } else if self.cpu.signals.addr & 0x0001 == 0x0000 {
+                    // ULA
+                    self.cpu.signals.data = self.ula.read_port(self.cpu.signals.addr);
+                } else {
+                    self.cpu.signals.data = 0xff;
+                    // println!(
+                    //     "port read - {:04x} ({:016b}) - pc: {:04x}",
+                    //     self.cpu.signals.addr, self.cpu.signals.addr, self.cpu.regs.pc
+                    // );
+                }
             }
             SignalReq::Write => {
                 self.ula.signals.addr = self.cpu.signals.addr;
                 self.ula.signals.data = self.cpu.signals.data;
                 self.ula.signals.port = SignalReq::Write;
-                // panic!(
-                //     "port write - {:04x} {:02x} - pc: {:04x}",
-                //     self.cpu.signals.addr, self.cpu.signals.data, self.cpu.regs.pc
-                // )
+
+                if self.cpu.signals.addr & 0x0001 == 0x0000 {
+                    // ULA
+                    self.ula
+                        .write_port(self.cpu.signals.addr, self.cpu.signals.data);
+                } else {
+                    // println!(
+                    //     "port write - {:04x} ({:016b}) - pc: {:04x}",
+                    //     self.cpu.signals.addr, self.cpu.signals.addr, self.cpu.regs.pc
+                    // );
+                }
             }
             SignalReq::None => (),
         }
@@ -85,8 +95,8 @@ impl Machine {
 
 fn load_rom() -> [u8; 0x4000] {
     let mut path = env::current_dir().unwrap().join("bin");
-    path = path.join("DiagROMv.171.rom");
-    // path = path.join("48.rom");
+    // path = path.join("DiagROMv.171.rom");
+    path = path.join("48.rom");
 
     let mut f = match File::open(path) {
         Ok(f) => f,

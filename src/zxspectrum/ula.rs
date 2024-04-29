@@ -1,6 +1,6 @@
 use std::sync::{mpsc::Sender, Arc, Mutex};
 
-use minifb::{Window, WindowOptions};
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
 
 use crate::signals::{SignalReq, Signals};
 
@@ -114,12 +114,6 @@ impl ULA {
     }
 
     pub fn tick(&mut self) {
-        match self.signals.port {
-            SignalReq::Read => todo!(),
-            SignalReq::Write => self.write_port(self.signals.addr, self.signals.data),
-            SignalReq::None => (),
-        }
-
         self.sound_frame += 1;
         if self.sound_frame == 50 {
             self.sound_frame = 0;
@@ -231,15 +225,26 @@ impl ULA {
             .update_with_buffer(&self.bitmap, WIDTH, HEIGHT)
             .unwrap();
         self.window.update();
+        // let keys = self.window.get_keys_pressed(KeyRepeat::Yes);
+        let keys = self.window.get_keys();
+        // if !keys.is_empty() {
+        //     println!("key: {:?} {}", keys, keys.len());
+        // }
+        self.keyboard_row = [0; 8];
+        self.on_key(keys);
     }
 
-    fn read_port(&self, port: u16) -> (u8, bool) {
+    pub fn read_port(&self, port: u16) -> u8 {
         if port & 0xff == 0xfe {
             let mut data = 0b00011111;
             let read_row = port >> 8;
             for row in 0..8 {
                 if (read_row & (1 << row)) == 0 {
-                    data &= self.keyboard_row[row];
+                    data ^= self.keyboard_row[row];
+                    // println!(
+                    //     "{:08b} - {:08b} - row:{}",
+                    //     data, self.keyboard_row[row], row
+                    // );
                 }
             }
             if self.ear_active && self.ear {
@@ -247,12 +252,12 @@ impl ULA {
             } else {
                 data |= 0b10100000;
             }
-            return (data, false);
+            return data;
         }
-        (self.floating_bus, false)
+        self.floating_bus
     }
 
-    fn write_port(&mut self, port: u16, data: u8) {
+    pub fn write_port(&mut self, port: u16, data: u8) {
         if port & 0xff == 0xfe {
             self.border_colour = PALETTE[data as usize & 0x07];
             self.buzzer = (data & 16) >> 4 != 0;
@@ -289,6 +294,87 @@ impl ULA {
             }
         }
         colors
+    }
+
+    fn on_key(&mut self, keys: Vec<Key>) {
+        for key in keys {
+            match key {
+                Key::Key1 => self.set_bit(3, 1),
+                Key::Key2 => self.set_bit(3, 2),
+                Key::Key3 => self.set_bit(3, 3),
+                Key::Key4 => self.set_bit(3, 4),
+                Key::Key5 => self.set_bit(3, 5),
+
+                Key::Key0 => self.set_bit(4, 1),
+                Key::Key9 => self.set_bit(4, 2),
+                Key::Key8 => self.set_bit(4, 3),
+                Key::Key7 => self.set_bit(4, 4),
+                Key::Key6 => self.set_bit(4, 5),
+
+                Key::Q => self.set_bit(2, 1),
+                Key::W => self.set_bit(2, 2),
+                Key::E => self.set_bit(2, 3),
+                Key::R => self.set_bit(2, 4),
+                Key::T => self.set_bit(2, 5),
+
+                Key::P => self.set_bit(5, 1),
+                Key::O => self.set_bit(5, 2),
+                Key::I => self.set_bit(5, 3),
+                Key::U => self.set_bit(5, 4),
+                Key::Y => self.set_bit(5, 5),
+
+                Key::A => self.set_bit(1, 1),
+                Key::S => self.set_bit(1, 2),
+                Key::D => self.set_bit(1, 3),
+                Key::F => self.set_bit(1, 4),
+                Key::G => self.set_bit(1, 5),
+
+                Key::Enter => self.set_bit(6, 1),
+                Key::L => self.set_bit(6, 2),
+                Key::K => self.set_bit(6, 3),
+                Key::J => self.set_bit(6, 4),
+                Key::H => self.set_bit(6, 5),
+
+                Key::LeftShift | Key::RightShift => self.set_bit(0, 1),
+                Key::Z => self.set_bit(0, 2),
+                Key::X => self.set_bit(0, 3),
+                Key::C => self.set_bit(0, 4),
+                Key::V => self.set_bit(0, 5),
+
+                Key::Space => self.set_bit(7, 1),
+                Key::LeftAlt | Key::RightAlt => self.set_bit(7, 2),
+                Key::M => self.set_bit(7, 3),
+                Key::N => self.set_bit(7, 4),
+                Key::B => self.set_bit(7, 5),
+
+                Key::Up => {
+                    self.set_bit(0, 1);
+                    self.set_bit(4, 4);
+                }
+                Key::Down => {
+                    self.set_bit(0, 1);
+                    self.set_bit(4, 5);
+                }
+                Key::Left => {
+                    self.set_bit(0, 1);
+                    self.set_bit(3, 5);
+                }
+                Key::Right => {
+                    self.set_bit(0, 1);
+                    self.set_bit(4, 3);
+                }
+                Key::Backspace => {
+                    self.set_bit(0, 1);
+                    self.set_bit(4, 1);
+                }
+                _ => (),
+            }
+        }
+    }
+
+    fn set_bit(&mut self, row: usize, bit: usize) {
+        let b = 1 << (bit - 1);
+        self.keyboard_row[row] |= b;
     }
 }
 

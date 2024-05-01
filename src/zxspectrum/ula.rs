@@ -186,7 +186,8 @@ impl ULA {
 
         self.ts += 1;
 
-        self.bitmap[self.col + (self.row * WIDTH)] = self.data.remove(0);
+        let (x, y) = self.get_xy(self.col, self.row);
+        self.bitmap[x + (y * WIDTH)] = self.data.remove(0);
 
         self.col += 1;
         if self.col == WIDTH {
@@ -204,7 +205,6 @@ impl ULA {
         } else {
             self.signals.interrupt = false;
         }
-        // }
     }
 
     fn get_xy(&self, col: usize, row: usize) -> (usize, usize) {

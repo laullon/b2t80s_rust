@@ -1,4 +1,7 @@
-use std::default;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::signals::{SignalReq, Signals};
 
@@ -64,9 +67,9 @@ impl CPU {
         }
     }
 
-    pub fn tick(self: &mut Self) {
+    pub fn tick(self: &mut Self) -> Option<u16> {
         if self.wait {
-            return;
+            return None;
         }
 
         if self.halt {
@@ -74,7 +77,7 @@ impl CPU {
                 self.halt = false;
                 self.regs.pc += 1;
             } else {
-                return;
+                return None;
             }
         }
 
@@ -132,6 +135,11 @@ impl CPU {
             }
             None => todo!(),
         };
+
+        if matches!(self.current_ops, None) && self.scheduler.is_empty() {
+            return Some(self.regs.pc);
+        }
+        None
     }
 
     fn decode_and_run(&mut self) {

@@ -1,7 +1,11 @@
+use std::borrow::{Borrow, BorrowMut};
+use std::sync::{Arc, Mutex};
 use std::{env, fs::File, io::Read};
 
+use crate::zxspectrum::tap;
 use crate::{signals::SignalReq, z80::cpu::CPU};
 
+use super::tap::Tap;
 use super::ula::ULA;
 
 pub struct Machine {
@@ -9,14 +13,32 @@ pub struct Machine {
 
     cpu: CPU,
     ula: ULA,
+
+    tap: Option<Tap>,
 }
 
 impl Machine {
     pub fn new() -> Self {
+        let mut path = env::current_dir().unwrap().join("bin");
+        // path = path.join("ulatest3.tap");
+        path = path.join("ManicMiner.tap");
+
+        let tap = match Tap::new(&path) {
+            Ok(tap) => {
+                println!("Successfully loaded TAP file: {}", tap.name);
+                Some(tap)
+            }
+            Err(err) => {
+                eprintln!("Error loading TAP file: {}", err);
+                None
+            }
+        };
+
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
             ula: ULA::new(),
+            tap,
         }
     }
 
@@ -26,33 +48,44 @@ impl Machine {
             self.bus_tick();
             self.ula.tick();
             self.bus_tick();
-            self.cpu.tick();
+            let trap = self.cpu.tick();
             self.bus_tick();
+
+            match trap {
+                Some(0x056B) => self.load_data_block(),
+                _ => {}
+            }
+        }
+    }
+
+    fn mem_read(self: &mut Self, addr: u16) -> u8 {
+        let bank: usize = (addr >> 14) as usize;
+        let addr = (addr & 0x3fff) as usize;
+        let data = self.memory[bank][addr];
+        // println!("\tMR {:04x} {:02x}", signals.addr, signals.data)
+        data
+    }
+
+    fn mem_write(self: &mut Self, addr: u16, data: u8) {
+        let bank = (addr >> 14) as usize;
+        let addr = (addr & 0x3fff) as usize;
+        if bank != 0 {
+            self.memory[bank][addr] = data;
+            // println!("\tMW {:04x} {:02x}", signals.addr, signals.data)
         }
     }
 
     fn bus_tick(self: &mut Self) {
-        for (signals, idx) in [(&mut self.ula.signals, 0), (&mut self.cpu.signals, 1)] {
-            let bank = (signals.addr >> 14) as usize;
-            let addr = (signals.addr & 0x3fff) as usize;
-            match signals.mem {
-                SignalReq::Read => {
-                    signals.data = self.memory[bank][addr];
-                    // println!("\tMR {:04x} {:02x}", signals.addr, signals.data)
-                }
-                SignalReq::Write => {
-                    // assert_ne!(
-                    //     bank, 0,
-                    //     "bank 0 write - {:04x} {:02x} - {} - pc: {:04x}",
-                    //     signals.addr, signals.data, idx, self.cpu.regs.pc
-                    // );
-                    if bank != 0 {
-                        self.memory[bank][addr] = signals.data;
-                        // println!("\tMW {:04x} {:02x}", signals.addr, signals.data)
-                    }
-                }
-                SignalReq::None => (),
-            }
+        match self.cpu.signals.mem {
+            SignalReq::Read => self.cpu.signals.data = self.mem_read(self.cpu.signals.addr),
+            SignalReq::Write => self.mem_write(self.cpu.signals.addr, self.cpu.signals.data),
+            SignalReq::None => (),
+        }
+
+        match self.ula.signals.mem {
+            SignalReq::Read => self.ula.signals.data = self.mem_read(self.ula.signals.addr),
+            SignalReq::Write => self.mem_write(self.ula.signals.addr, self.ula.signals.data),
+            SignalReq::None => (),
         }
 
         match self.cpu.signals.port {
@@ -91,6 +124,71 @@ impl Machine {
         }
         self.cpu.signals.interrupt = self.ula.signals.interrupt;
     }
+
+    fn load_data_block(&mut self) {
+        let data: Vec<u8> = match self.tap.borrow_mut() {
+            Some(tap) => tap
+                .next_block()
+                .map(|block| block.to_vec())
+                .unwrap_or_else(Vec::new),
+            None => {
+                println!("TAP file not loaded, returning empty vector");
+                Vec::new()
+            }
+        };
+        if data.is_empty() {
+            return; //emulator::CONTINUE
+        }
+
+        let requested_length = self.cpu.regs.de();
+        let start_address = self.cpu.regs.ix();
+        println!("Loading block to {:04x} ({})", start_address, data.len());
+
+        self.cpu.wait = true;
+        let a = data[0];
+        println!(
+            "{} == {} : {}",
+            self.cpu.regs.a_alt,
+            a,
+            self.cpu.regs.a_alt == a
+        );
+        println!("requestedLength: {}", requested_length);
+        if self.cpu.regs.a_alt == a {
+            if self.cpu.regs.f_alt.c {
+                let mut checksum = data[0];
+                for i in 0..(requested_length as usize) {
+                    let loaded_byte = data[i + 1];
+                    self.mem_write(start_address.wrapping_add(i as u16), loaded_byte);
+                    checksum ^= loaded_byte;
+                }
+                println!(
+                    "{} == {} : {}",
+                    checksum,
+                    data[requested_length as usize + 1],
+                    checksum == data[requested_length as usize + 1]
+                );
+                self.cpu.regs.f.c = true;
+            } else {
+                self.cpu.regs.f.c = true;
+            }
+            println!("done");
+        } else {
+            self.cpu.regs.f.c = false;
+            println!("BAD Block");
+        }
+
+        self.cpu.regs.pc = 0x05e2;
+        self.cpu.wait = false;
+        println!("Done\n--------");
+
+        return;
+    }
+}
+
+impl Default for Machine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn load_rom() -> [u8; 0x4000] {
@@ -98,21 +196,9 @@ fn load_rom() -> [u8; 0x4000] {
     // path = path.join("DiagROMv.171.rom");
     path = path.join("48.rom");
 
-    let mut f = match File::open(path) {
-        Ok(f) => f,
-        Err(err) => {
-            panic!("error!! {}", err);
-        }
-    };
-    let mut zexdoc = Vec::new();
-    match f.read_to_end(&mut zexdoc) {
-        Ok(_) => (),
-        Err(err) => {
-            panic!("error!! {}", err);
-        }
-    };
+    let mut f = File::open(&path).expect("Failed to open ROM file");
+    let mut rom = [0; 0x4000];
+    f.read_exact(&mut rom).expect("Failed to read ROM file");
 
-    let mut rom = vec![0; 0];
-    rom.extend_from_slice(&zexdoc);
-    rom.try_into().unwrap()
+    rom
 }

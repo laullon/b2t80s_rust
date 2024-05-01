@@ -1,6 +1,6 @@
 macro_rules! make_reg_functions {
     ($name:ident, $name2:ident, $l:ident, $h:ident) => {
-        fn $name(self: &Self) -> u16 {
+        pub fn $name(self: &Self) -> u16 {
             ((self.$l as u16) << 8) | (self.$h as u16)
         }
 
@@ -32,8 +32,8 @@ pub struct Registers {
     h: u8,
     l: u8,
 
-    a_: u8,
-    f_: Flags,
+    pub a_alt: u8,
+    pub f_alt: Flags,
 
     b_: u8,
     c_: u8,
@@ -75,8 +75,8 @@ impl Registers {
             e: 0,
             h: 0,
             l: 0,
-            a_: 0,
-            f_: Flags::default(),
+            a_alt: 0,
+            f_alt: Flags::default(),
             b_: 0,
             c_: 0,
             d_: 0,
@@ -119,12 +119,12 @@ impl Registers {
     }
 
     pub fn af_aux(self: &Self) -> u16 {
-        ((self.a_ as u16) << 8) | (self.f_.get() as u16)
+        ((self.a_alt as u16) << 8) | (self.f_alt.get() as u16)
     }
 
     pub fn set_af_aux(self: &mut Self, v: u16) {
-        self.a_ = (v >> 8) as u8;
-        self.f_.set(v as u8);
+        self.a_alt = (v >> 8) as u8;
+        self.f_alt.set(v as u8);
     }
 
     pub fn get_r(&self, r: u8) -> u8 {
@@ -223,8 +223,8 @@ impl Registers {
     }
 
     pub fn exafaf(&mut self) {
-        (self.a, self.a_) = (self.a_, self.a);
-        (self.f, self.f_) = (self.f_, self.f);
+        (self.a, self.a_alt) = (self.a_alt, self.a);
+        (self.f, self.f_alt) = (self.f_alt, self.f);
     }
 
     pub fn exx(&mut self) {

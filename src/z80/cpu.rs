@@ -692,7 +692,7 @@ impl CPU {
                     }
                 }
                 self.signals.mem = SignalReq::None;
-                self.regs.pc += 1;
+                self.regs.pc = self.regs.pc.wrapping_add(1);
                 return true;
             }
             _ => panic!(),

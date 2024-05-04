@@ -9,3 +9,6 @@ edition = "2021"
 image = "0.25.1"
 minifb = "0.25.0"
 rand = "0.8"
+
+[profile.release]
+debug = false

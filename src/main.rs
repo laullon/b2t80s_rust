@@ -1,6 +1,5 @@
-use b2t80s_rust::zxspectrum::zx48k::Machine;
+use b2t80s_rust::zxspectrum::zx48k;
 
 fn main() {
-    let mut machine = Machine::new();
-    machine.run();
+    zx48k::run();
 }

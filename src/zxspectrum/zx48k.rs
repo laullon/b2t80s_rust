@@ -1,14 +1,36 @@
-use std::borrow::{Borrow, BorrowMut};
-use std::sync::{Arc, Mutex};
+use std::borrow::BorrowMut;
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::Instant;
 use std::{env, fs::File, io::Read};
 
-use crate::zxspectrum::tap;
+use minifb::Key;
+
 use crate::{signals::SignalReq, z80::cpu::CPU};
 
+use super::screen::Screen;
 use super::tap::Tap;
-use super::ula::ULA;
+use super::ula::{HEIGHT, ULA, WIDTH};
 
-pub struct Machine {
+pub fn run() {
+    let bitmap: Vec<u32> = vec![0; WIDTH * HEIGHT];
+
+    let shared_bitmap = Arc::new(Mutex::new(bitmap));
+
+    let ula_bitmap = Arc::clone(&shared_bitmap);
+    let scr_bitmap = Arc::clone(&shared_bitmap);
+
+    let (keyboard_sender, keyboard_receiver) = channel::<Vec<Key>>();
+
+    thread::spawn(move || {
+        Bus::new(ula_bitmap, keyboard_receiver).run();
+    });
+
+    Screen::new(scr_bitmap, keyboard_sender).run();
+}
+
+struct Bus {
     memory: [[u8; 0x4000]; 4],
 
     cpu: CPU,
@@ -17,9 +39,9 @@ pub struct Machine {
     tap: Option<Tap>,
 }
 
-impl Machine {
-    pub fn new() -> Self {
-        let mut path = env::current_dir().unwrap().join("bin");
+impl Bus {
+    pub fn new(bitmap: Arc<Mutex<Vec<u32>>>, keyboard_receiver: Receiver<Vec<Key>>) -> Self {
+        let mut path: std::path::PathBuf = env::current_dir().unwrap().join("bin");
         // path = path.join("ulatest3.tap");
         path = path.join("ManicMiner.tap");
 
@@ -37,24 +59,29 @@ impl Machine {
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
-            ula: ULA::new(),
+            ula: ULA::new(bitmap, keyboard_receiver),
             tap,
+            // screen: Screen::new(scr_bitmap),
         }
     }
 
     pub fn run(self: &mut Self) {
         loop {
-            self.ula.tick();
-            self.bus_tick();
-            self.ula.tick();
-            self.bus_tick();
-            let trap = self.cpu.tick();
-            self.bus_tick();
+            let start = Instant::now();
+            for _ in 0..3_500_000 {
+                self.ula.tick();
+                self.bus_tick();
+                self.ula.tick();
+                self.bus_tick();
+                let trap = self.cpu.tick();
+                self.bus_tick();
 
-            match trap {
-                Some(0x056B) => self.load_data_block(),
-                _ => {}
+                match trap {
+                    Some(0x056B) => self.load_data_block(),
+                    _ => {}
+                }
             }
+            println!("3.5MHz: {:?}", start.elapsed());
         }
     }
 
@@ -182,12 +209,6 @@ impl Machine {
         println!("Done\n--------");
 
         return;
-    }
-}
-
-impl Default for Machine {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

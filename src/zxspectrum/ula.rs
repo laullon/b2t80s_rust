@@ -1,8 +1,14 @@
-use std::sync::{mpsc::Sender, Arc, Mutex};
+use std::{
+    sync::{mpsc::Receiver, Arc, Mutex},
+    thread::{self, Thread},
+    time::Instant,
+};
 
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use minifb::{Key, Window, WindowOptions};
 
 use crate::signals::{SignalReq, Signals};
+
+use super::screen::Screen;
 
 pub const SRC_SIZE: usize = WIDTH * WIDTH + 1;
 pub const WIDTH: usize = 448;
@@ -44,9 +50,9 @@ pub struct ULA {
 
     pub signals: Signals,
 
-    window: Window,
-    bitmap: Vec<u32>,
+    bitmap: Arc<Mutex<Vec<u32>>>,
     data: Vec<u32>,
+    keyboard_receiver: Receiver<Vec<Key>>,
 }
 
 pub enum ULASignal {
@@ -54,18 +60,7 @@ pub enum ULASignal {
 }
 
 impl ULA {
-    pub fn new() -> Self {
-        let bitmap: Vec<u32> = vec![0; WIDTH * HEIGHT];
-        let window = Window::new(
-            "Test - ESC to exit",
-            WIDTH * 3,
-            HEIGHT * 3,
-            WindowOptions::default(),
-        )
-        .unwrap_or_else(|e| {
-            panic!("{}", e);
-        });
-
+    pub fn new(bitmap: Arc<Mutex<Vec<u32>>>, keyboard_receiver: Receiver<Vec<Key>>) -> Self {
         ULA {
             // listener: None,
             // cpu,
@@ -91,9 +86,9 @@ impl ULA {
 
             signals: Signals::default(),
 
-            window,
             bitmap,
             data: vec![0; 8],
+            keyboard_receiver,
         }
     }
 
@@ -118,6 +113,11 @@ impl ULA {
         if self.sound_frame == 50 {
             self.sound_frame = 0;
             // self.sound.tick(self.buzzer);
+        }
+
+        match self.keyboard_receiver.try_recv() {
+            Ok(keys) => self.on_key(keys),
+            Err(_) => {}
         }
 
         let in_screen = (0..256).contains(&self.col) && (0..192).contains(&self.row);
@@ -187,7 +187,7 @@ impl ULA {
         self.ts += 1;
 
         let (x, y) = self.get_xy(self.col, self.row);
-        self.bitmap[x + (y * WIDTH)] = self.data.remove(0);
+        self.bitmap.lock().unwrap()[x + (y * WIDTH)] = self.data.remove(0);
 
         self.col += 1;
         if self.col == WIDTH {
@@ -221,17 +221,12 @@ impl ULA {
     }
 
     fn frame_done(&mut self) {
-        self.window
-            .update_with_buffer(&self.bitmap, WIDTH, HEIGHT)
-            .unwrap();
-        self.window.update();
-        // let keys = self.window.get_keys_pressed(KeyRepeat::Yes);
-        let keys = self.window.get_keys();
-        // if !keys.is_empty() {
-        //     println!("key: {:?} {}", keys, keys.len());
-        // }
-        self.keyboard_row = [0; 8];
-        self.on_key(keys);
+        // let start = Instant::now();
+        // println!("    frame_done: {:?}", start.elapsed());
+
+        // let keys = self.window.get_keys();
+        // self.keyboard_row = [0; 8];
+        // self.on_key(keys);
     }
 
     pub fn read_port(&self, port: u16) -> u8 {
@@ -297,6 +292,8 @@ impl ULA {
     }
 
     fn on_key(&mut self, keys: Vec<Key>) {
+        // println!("keys: {:?}", keys);
+        self.keyboard_row = [0; 8];
         for key in keys {
             match key {
                 Key::Key1 => self.set_bit(3, 1),

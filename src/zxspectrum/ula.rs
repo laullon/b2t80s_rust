@@ -11,8 +11,6 @@ pub const HEIGHT: usize = 312;
 // pub const SCREEN_WIDTH: usize = 352;
 // pub const SCREEN_HEIGHT: usize = 296;
 
-pub struct Redraw;
-
 const PALETTE: [u32; 16] = [
     0x00000000, 0x002030c0, 0x00c04010, 0x00c040c0, 0x0040b010, 0x0050c0b0, 0x00e0c010, 0x00c0c0c0,
     0x00000000, 0x003040ff, 0x00ff4030, 0x00ff70f0, 0x0050e010, 0x0050e0ff, 0x00ffe850, 0x00ffffff,
@@ -47,10 +45,11 @@ pub struct ULA {
 
     pub signals: Signals,
 
-    bitmap: Arc<Mutex<Vec<u32>>>,
+    bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
     data: Vec<u32>,
     keyboard_receiver: Receiver<Vec<Key>>,
-    redraw_sender: Sender<Redraw>,
+    redraw_sender: Sender<usize>,
+    buffer: usize,
 }
 
 pub enum ULASignal {
@@ -59,9 +58,9 @@ pub enum ULASignal {
 
 impl ULA {
     pub fn new(
-        bitmap: Arc<Mutex<Vec<u32>>>,
+        bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
         keyboard_receiver: Receiver<Vec<Key>>,
-        redraw_sender: Sender<Redraw>,
+        redraw_sender: Sender<usize>,
     ) -> Self {
         ULA {
             // listener: None,
@@ -88,10 +87,11 @@ impl ULA {
 
             signals: Signals::default(),
 
-            bitmap,
+            bitmaps,
             data: vec![0; 8],
             keyboard_receiver,
             redraw_sender,
+            buffer: 0,
         }
     }
 
@@ -190,7 +190,7 @@ impl ULA {
         self.ts += 1;
 
         let (x, y) = self.get_xy(self.col, self.row);
-        self.bitmap.lock().unwrap()[x + (y * WIDTH)] = self.data.remove(0);
+        self.bitmaps[self.buffer].lock().unwrap()[x + (y * WIDTH)] = self.data.remove(0);
 
         self.col += 1;
         if self.col == WIDTH {
@@ -224,7 +224,8 @@ impl ULA {
     }
 
     fn frame_done(&mut self) {
-        self.redraw_sender.send(Redraw).unwrap();
+        self.redraw_sender.send(self.buffer).unwrap();
+        self.buffer = 1 - self.buffer;
 
         // let start = Instant::now();
         // println!("    frame_done: {:?}", start.elapsed());

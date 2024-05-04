@@ -1,24 +1,24 @@
 use std::sync::{
-    mpsc::{self, Receiver, Sender},
+    mpsc::{Receiver, Sender},
     Arc, Mutex,
 };
 
 use minifb::{Key, Window, WindowOptions};
 
-use super::ula::{Redraw, HEIGHT, WIDTH};
+use super::ula::{HEIGHT, WIDTH};
 
 pub struct Screen {
     window: Window,
-    bitmap: Arc<Mutex<Vec<u32>>>,
+    bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
     keyboard_sender: Sender<Vec<Key>>,
-    redraw_receiver: Receiver<Redraw>,
+    redraw_receiver: Receiver<usize>,
 }
 
 impl Screen {
     pub fn new(
-        bitmap: Arc<Mutex<Vec<u32>>>,
+        bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
         keyboard_sender: Sender<Vec<Key>>,
-        redraw_receiver: Receiver<Redraw>,
+        redraw_receiver: Receiver<usize>,
     ) -> Self {
         let window = Window::new(
             "Test - ESC to exit",
@@ -31,7 +31,7 @@ impl Screen {
         });
         Self {
             window,
-            bitmap,
+            bitmaps,
             keyboard_sender,
             redraw_receiver,
         }
@@ -40,9 +40,9 @@ impl Screen {
     pub fn run(&mut self) {
         loop {
             match self.redraw_receiver.try_recv() {
-                Ok(_) => {
+                Ok(buffer) => {
                     self.window
-                        .update_with_buffer(&self.bitmap.lock().unwrap(), WIDTH, HEIGHT)
+                        .update_with_buffer(&self.bitmaps[buffer].lock().unwrap(), WIDTH, HEIGHT)
                         .unwrap();
                 }
                 Err(_) => {}

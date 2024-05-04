@@ -11,21 +11,25 @@ use crate::{signals::SignalReq, z80::cpu::CPU};
 
 use super::screen::Screen;
 use super::tap::Tap;
-use super::ula::{Redraw, HEIGHT, ULA, WIDTH};
+use super::ula::{HEIGHT, ULA, WIDTH};
 
 pub fn run() {
     let bitmap: Vec<u32> = vec![0; WIDTH * HEIGHT];
     let ula_bitmap = Arc::new(Mutex::new(bitmap));
     let scr_bitmap = Arc::clone(&ula_bitmap);
 
+    let bitmap_2: Vec<u32> = vec![0; WIDTH * HEIGHT];
+    let ula_bitmap_2 = Arc::new(Mutex::new(bitmap_2));
+    let scr_bitmap_2 = Arc::clone(&ula_bitmap_2);
+
     let (keyboard_sender, keyboard_receiver) = channel::<Vec<Key>>();
-    let (redraw_sender, redraw_receiver) = channel::<Redraw>();
+    let (redraw_sender, redraw_receiver) = channel::<usize>();
 
     thread::spawn(move || {
-        Bus::new(ula_bitmap, keyboard_receiver, redraw_sender).run();
+        Bus::new([ula_bitmap, ula_bitmap_2], keyboard_receiver, redraw_sender).run();
     });
 
-    Screen::new(scr_bitmap, keyboard_sender, redraw_receiver).run();
+    Screen::new([scr_bitmap, scr_bitmap_2], keyboard_sender, redraw_receiver).run();
 }
 
 struct Bus {
@@ -39,9 +43,9 @@ struct Bus {
 
 impl Bus {
     pub fn new(
-        bitmap: Arc<Mutex<Vec<u32>>>,
+        bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
         keyboard_receiver: Receiver<Vec<Key>>,
-        redraw_sender: Sender<Redraw>,
+        redraw_sender: Sender<usize>,
     ) -> Self {
         let mut path: std::path::PathBuf = env::current_dir().unwrap().join("bin");
         // path = path.join("ulatest3.tap");
@@ -61,7 +65,7 @@ impl Bus {
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
-            ula: ULA::new(bitmap, keyboard_receiver, redraw_sender),
+            ula: ULA::new(bitmaps, keyboard_receiver, redraw_sender),
             tap,
             // screen: Screen::new(scr_bitmap),
         }

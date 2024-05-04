@@ -1,20 +1,17 @@
-use std::{
-    sync::{mpsc::Receiver, Arc, Mutex},
-    thread::{self, Thread},
-    time::Instant,
-};
-
-use minifb::{Key, Window, WindowOptions};
-
 use crate::signals::{SignalReq, Signals};
-
-use super::screen::Screen;
+use minifb::Key;
+use std::sync::{
+    mpsc::{Receiver, Sender},
+    Arc, Mutex,
+};
 
 pub const SRC_SIZE: usize = WIDTH * WIDTH + 1;
 pub const WIDTH: usize = 448;
 pub const HEIGHT: usize = 312;
 // pub const SCREEN_WIDTH: usize = 352;
 // pub const SCREEN_HEIGHT: usize = 296;
+
+pub struct Redraw;
 
 const PALETTE: [u32; 16] = [
     0x00000000, 0x002030c0, 0x00c04010, 0x00c040c0, 0x0040b010, 0x0050c0b0, 0x00e0c010, 0x00c0c0c0,
@@ -53,6 +50,7 @@ pub struct ULA {
     bitmap: Arc<Mutex<Vec<u32>>>,
     data: Vec<u32>,
     keyboard_receiver: Receiver<Vec<Key>>,
+    redraw_sender: Sender<Redraw>,
 }
 
 pub enum ULASignal {
@@ -60,7 +58,11 @@ pub enum ULASignal {
 }
 
 impl ULA {
-    pub fn new(bitmap: Arc<Mutex<Vec<u32>>>, keyboard_receiver: Receiver<Vec<Key>>) -> Self {
+    pub fn new(
+        bitmap: Arc<Mutex<Vec<u32>>>,
+        keyboard_receiver: Receiver<Vec<Key>>,
+        redraw_sender: Sender<Redraw>,
+    ) -> Self {
         ULA {
             // listener: None,
             // cpu,
@@ -89,6 +91,7 @@ impl ULA {
             bitmap,
             data: vec![0; 8],
             keyboard_receiver,
+            redraw_sender,
         }
     }
 
@@ -195,8 +198,8 @@ impl ULA {
             self.row += 1;
             if self.row == HEIGHT {
                 self.row = 0;
-                self.ts = 0;
                 self.frame_done();
+                self.ts = 0;
             }
         }
 
@@ -221,6 +224,8 @@ impl ULA {
     }
 
     fn frame_done(&mut self) {
+        self.redraw_sender.send(Redraw).unwrap();
+
         // let start = Instant::now();
         // println!("    frame_done: {:?}", start.elapsed());
 

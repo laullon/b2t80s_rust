@@ -1,5 +1,5 @@
 use std::borrow::BorrowMut;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -11,23 +11,21 @@ use crate::{signals::SignalReq, z80::cpu::CPU};
 
 use super::screen::Screen;
 use super::tap::Tap;
-use super::ula::{HEIGHT, ULA, WIDTH};
+use super::ula::{Redraw, HEIGHT, ULA, WIDTH};
 
 pub fn run() {
     let bitmap: Vec<u32> = vec![0; WIDTH * HEIGHT];
-
-    let shared_bitmap = Arc::new(Mutex::new(bitmap));
-
-    let ula_bitmap = Arc::clone(&shared_bitmap);
-    let scr_bitmap = Arc::clone(&shared_bitmap);
+    let ula_bitmap = Arc::new(Mutex::new(bitmap));
+    let scr_bitmap = Arc::clone(&ula_bitmap);
 
     let (keyboard_sender, keyboard_receiver) = channel::<Vec<Key>>();
+    let (redraw_sender, redraw_receiver) = channel::<Redraw>();
 
     thread::spawn(move || {
-        Bus::new(ula_bitmap, keyboard_receiver).run();
+        Bus::new(ula_bitmap, keyboard_receiver, redraw_sender).run();
     });
 
-    Screen::new(scr_bitmap, keyboard_sender).run();
+    Screen::new(scr_bitmap, keyboard_sender, redraw_receiver).run();
 }
 
 struct Bus {
@@ -40,7 +38,11 @@ struct Bus {
 }
 
 impl Bus {
-    pub fn new(bitmap: Arc<Mutex<Vec<u32>>>, keyboard_receiver: Receiver<Vec<Key>>) -> Self {
+    pub fn new(
+        bitmap: Arc<Mutex<Vec<u32>>>,
+        keyboard_receiver: Receiver<Vec<Key>>,
+        redraw_sender: Sender<Redraw>,
+    ) -> Self {
         let mut path: std::path::PathBuf = env::current_dir().unwrap().join("bin");
         // path = path.join("ulatest3.tap");
         path = path.join("ManicMiner.tap");
@@ -59,7 +61,7 @@ impl Bus {
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
-            ula: ULA::new(bitmap, keyboard_receiver),
+            ula: ULA::new(bitmap, keyboard_receiver, redraw_sender),
             tap,
             // screen: Screen::new(scr_bitmap),
         }
@@ -132,10 +134,6 @@ impl Bus {
                 }
             }
             SignalReq::Write => {
-                self.ula.signals.addr = self.cpu.signals.addr;
-                self.ula.signals.data = self.cpu.signals.data;
-                self.ula.signals.port = SignalReq::Write;
-
                 if self.cpu.signals.addr & 0x0001 == 0x0000 {
                     // ULA
                     self.ula

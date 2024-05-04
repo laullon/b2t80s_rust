@@ -1,20 +1,25 @@
 use std::sync::{
-    mpsc::{self, Sender},
+    mpsc::{self, Receiver, Sender},
     Arc, Mutex,
 };
 
 use minifb::{Key, Window, WindowOptions};
 
-use super::ula::{HEIGHT, WIDTH};
+use super::ula::{Redraw, HEIGHT, WIDTH};
 
 pub struct Screen {
     window: Window,
     bitmap: Arc<Mutex<Vec<u32>>>,
     keyboard_sender: Sender<Vec<Key>>,
+    redraw_receiver: Receiver<Redraw>,
 }
 
 impl Screen {
-    pub fn new(bitmap: Arc<Mutex<Vec<u32>>>, keyboard_sender: Sender<Vec<Key>>) -> Self {
+    pub fn new(
+        bitmap: Arc<Mutex<Vec<u32>>>,
+        keyboard_sender: Sender<Vec<Key>>,
+        redraw_receiver: Receiver<Redraw>,
+    ) -> Self {
         let window = Window::new(
             "Test - ESC to exit",
             WIDTH * 3,
@@ -28,14 +33,20 @@ impl Screen {
             window,
             bitmap,
             keyboard_sender,
+            redraw_receiver,
         }
     }
 
     pub fn run(&mut self) {
         loop {
-            self.window
-                .update_with_buffer(&self.bitmap.lock().unwrap(), WIDTH, HEIGHT)
-                .unwrap();
+            match self.redraw_receiver.try_recv() {
+                Ok(_) => {
+                    self.window
+                        .update_with_buffer(&self.bitmap.lock().unwrap(), WIDTH, HEIGHT)
+                        .unwrap();
+                }
+                Err(_) => {}
+            }
             self.window.update();
             let keys = self.window.get_keys();
             self.keyboard_sender.send(keys).unwrap();

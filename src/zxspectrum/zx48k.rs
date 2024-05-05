@@ -1,8 +1,8 @@
 use std::borrow::BorrowMut;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{env, fs::File, io::Read};
 
 use minifb::Key;
@@ -49,7 +49,8 @@ impl Bus {
     ) -> Self {
         let mut path: std::path::PathBuf = env::current_dir().unwrap().join("bin");
         // path = path.join("ulatest3.tap");
-        path = path.join("ManicMiner.tap");
+        // path = path.join("ManicMiner.tap");
+        path = path.join("AquaPlane.tap");
 
         let tap = match Tap::new(&path) {
             Ok(tap) => {
@@ -71,23 +72,34 @@ impl Bus {
         }
     }
 
-    pub fn run(self: &mut Self) {
+    fn run(self: &mut Self) {
         loop {
-            let start = Instant::now();
-            for _ in 0..3_500_000 {
-                self.ula.tick();
-                self.bus_tick();
-                self.ula.tick();
-                self.bus_tick();
-                let trap = self.cpu.tick();
-                self.bus_tick();
+            let start_35: Instant = Instant::now();
+            let mut total = Duration::new(0, 0);
+            let chunks = 100;
+            let max_duration = Duration::from_millis(1000 / chunks) - Duration::from_millis(2);
+            for _ in 0..chunks {
+                let start: Instant = Instant::now();
+                for _ in 0..35000 {
+                    self.ula.tick();
+                    self.bus_tick();
+                    self.ula.tick();
+                    self.bus_tick();
+                    let trap = self.cpu.tick();
+                    self.bus_tick();
 
-                match trap {
-                    Some(0x056B) => self.load_data_block(),
-                    _ => {}
+                    match trap {
+                        Some(0x056B) => self.load_data_block(),
+                        _ => {}
+                    }
+                }
+                let used = start.elapsed();
+                total += used;
+                if used < max_duration {
+                    thread::sleep(max_duration - used);
                 }
             }
-            println!("3.5MHz: {:?}", start.elapsed());
+            println!("3.5MHz: {:?} ({:?})", total, start_35.elapsed());
         }
     }
 

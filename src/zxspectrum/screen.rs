@@ -44,12 +44,14 @@ impl Screen {
                     self.window
                         .update_with_buffer(&self.bitmaps[buffer].lock().unwrap(), WIDTH, HEIGHT)
                         .unwrap();
+                    self.window.update();
                 }
                 Err(_) => {}
             }
-            self.window.update();
             let keys = self.window.get_keys();
-            self.keyboard_sender.send(keys).unwrap();
+            self.keyboard_sender
+                .send(keys)
+                .expect("Something went wrong");
         }
     }
 }

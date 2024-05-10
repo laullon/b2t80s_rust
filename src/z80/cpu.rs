@@ -17,6 +17,7 @@ pub struct CPU {
     pub scheduler: Vec<Operation>,
     pub wait: bool,
     pub halt: bool,
+    pub do_reset: bool,
     pub current_ops: Option<Operation>,
     pub current_ops_ts: u8,
 }
@@ -60,6 +61,7 @@ impl CPU {
             },
             fetched: Fetched::default(),
             scheduler: Vec::new(),
+            do_reset: true,
             wait: false,
             halt: false,
             current_ops: Some(Operation::Fetch),
@@ -89,6 +91,20 @@ impl CPU {
                 // }
                 self.fetched = Fetched::default();
                 self.regs.index_mode = IndexMode::Hl;
+
+                if self.do_reset {
+                    self.regs.f.set(0xff);
+                    self.regs.a = 0xff;
+                    self.regs.i = 0;
+                    self.regs.r = 0;
+                    self.regs.pc = 0;
+                    self.regs.sp = 0xffff;
+                    self.regs.iff1 = false;
+                    self.regs.iff2 = false;
+                    self.halt = false;
+                    self.do_reset = false;
+                    return None;
+                }
 
                 if self.signals.interrupt && self.regs.iff1 {
                     match self.regs.im {
@@ -805,7 +821,17 @@ impl CPU {
         return true;
     }
 
-    fn int02(&self) -> bool {
-        todo!()
+    fn int02(&mut self) -> bool {
+        self.regs.iff1 = false;
+        self.regs.sp = self.regs.sp.wrapping_sub(2);
+        self.scheduler.push(Operation::Delay(1));
+        self.scheduler
+            .push(Operation::Mw16(self.regs.sp, self.regs.pc));
+
+        let pos = (self.regs.i as u16) << 8;
+
+        self.scheduler.push(Operation::MrAddrR(pos, 8)); // P
+        self.scheduler.push(Operation::MrAddrR(pos + 1, 9)); // C
+        true
     }
 }

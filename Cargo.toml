@@ -6,12 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+rfd = "0.14.1"
 time = "0.3"
 iced = { git = "https://github.com/iced-rs/iced.git", features = [
     "image",
     "tokio",
     "debug",
 ] }
-
 [profile.release]
 debug = false

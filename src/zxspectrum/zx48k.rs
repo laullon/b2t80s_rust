@@ -7,6 +7,7 @@ use std::{env, fs::File, io::Read};
 
 use iced::widget::{container, image, Image};
 use iced::{event, ContentFit, Element, Event, Length, Subscription};
+use rfd::FileDialog;
 
 use crate::{signals::SignalReq, z80::cpu::CPU};
 
@@ -89,10 +90,7 @@ impl Zx48k {
         ])
     }
 }
-/* ********************************************* */
-/* ********************************************* */
-/* ********************************************* */
-/* ********************************************* */
+
 /* ********************************************* */
 
 struct Bus {
@@ -106,28 +104,11 @@ struct Bus {
 
 impl Bus {
     pub fn new(bitmaps: [Arc<Mutex<Vec<u8>>>; 2], event_rx: Receiver<KeyEvent>) -> Self {
-        let mut path: std::path::PathBuf = env::current_dir().unwrap().join("bin");
-        // path = path.join("ulatest3.tap");
-        path = path.join("ManicMiner.tap");
-        // path = path.join("AquaPlane.tap");
-
-        let tap = match Tap::new(&path) {
-            Ok(tap) => {
-                println!("Successfully loaded TAP file: {}", tap.name);
-                Some(tap)
-            }
-            Err(err) => {
-                eprintln!("Error loading TAP file: {}", err);
-                None
-            }
-        };
-
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
             ula: ULA::new(bitmaps, event_rx),
-            tap,
-            // screen: Screen::new(scr_bitmap),
+            tap: None,
         }
     }
 
@@ -148,7 +129,35 @@ impl Bus {
                     self.bus_tick();
 
                     match trap {
-                        Some(0x056B) => self.load_data_block(),
+                        Some(0x056B) => match self.tap {
+                            Some(_) => self.load_data_block(),
+                            None => {
+                                let path: std::path::PathBuf = env::current_dir().unwrap();
+                                let file = FileDialog::new()
+                                    .add_filter("tap", &["tap"])
+                                    .set_directory(path)
+                                    .pick_file();
+
+                                match file {
+                                    Some(path) => {
+                                        self.tap = match Tap::new(&path) {
+                                            Ok(tap) => {
+                                                println!(
+                                                    "Successfully loaded TAP file: {}",
+                                                    tap.name
+                                                );
+                                                Some(tap)
+                                            }
+                                            Err(err) => {
+                                                eprintln!("Error loading TAP file: {}", err);
+                                                None
+                                            }
+                                        };
+                                    }
+                                    None => self.cpu.do_reset = true,
+                                };
+                            }
+                        },
                         _ => {}
                     }
                 }

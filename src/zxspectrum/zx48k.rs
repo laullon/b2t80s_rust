@@ -5,32 +5,95 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{env, fs::File, io::Read};
 
-use minifb::Key;
+use iced::widget::{container, image, Image};
+use iced::{event, ContentFit, Element, Event, Length, Subscription};
 
 use crate::{signals::SignalReq, z80::cpu::CPU};
 
-use super::screen::Screen;
 use super::tap::Tap;
 use super::ula::{HEIGHT, ULA, WIDTH};
 
-pub fn run() {
-    let bitmap: Vec<u32> = vec![0; WIDTH * HEIGHT];
-    let ula_bitmap = Arc::new(Mutex::new(bitmap));
-    let scr_bitmap = Arc::clone(&ula_bitmap);
+use iced::keyboard::Event as KeyEvent;
 
-    let bitmap_2: Vec<u32> = vec![0; WIDTH * HEIGHT];
-    let ula_bitmap_2 = Arc::new(Mutex::new(bitmap_2));
-    let scr_bitmap_2 = Arc::clone(&ula_bitmap_2);
+/* ********************************************* */
 
-    let (keyboard_sender, keyboard_receiver) = channel::<Vec<Key>>();
-    let (redraw_sender, redraw_receiver) = channel::<usize>();
-
-    thread::spawn(move || {
-        Bus::new([ula_bitmap, ula_bitmap_2], keyboard_receiver, redraw_sender).run();
-    });
-
-    Screen::new([scr_bitmap, scr_bitmap_2], keyboard_sender, redraw_receiver).run();
+pub struct Zx48k {
+    bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
+    buffer: usize,
+    event_tx: Sender<KeyEvent>,
 }
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Tick(),
+    KeyEvent(KeyEvent),
+}
+
+impl Default for Zx48k {
+    fn default() -> Self {
+        let bitmap: Vec<u8> = vec![0; WIDTH * HEIGHT * 4];
+        let ula_bitmap = Arc::new(Mutex::new(bitmap));
+        let scr_bitmap = Arc::clone(&ula_bitmap);
+
+        let bitmap_2: Vec<u8> = vec![0; WIDTH * HEIGHT * 4];
+        let ula_bitmap_2 = Arc::new(Mutex::new(bitmap_2));
+        let scr_bitmap_2 = Arc::clone(&ula_bitmap_2);
+
+        let (event_tx, event_rx) = channel::<KeyEvent>();
+        thread::spawn(move || {
+            Bus::new([ula_bitmap, ula_bitmap_2], event_rx).run();
+        });
+
+        Self {
+            bitmaps: [scr_bitmap, scr_bitmap_2],
+            buffer: 0,
+            event_tx,
+        }
+    }
+}
+
+impl Zx48k {
+    pub fn view(&self) -> Element<'_, Message> {
+        let screen = image::Handle::from_rgba(
+            WIDTH as u32,
+            HEIGHT as u32,
+            self.bitmaps[self.buffer].lock().unwrap().clone(),
+        );
+
+        let screen = Image::<image::Handle>::new(screen)
+            .filter_method(image::FilterMethod::Nearest)
+            .content_fit(ContentFit::Contain)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        let image = container(screen).width(Length::Fill).width(Length::Fill);
+
+        image.into()
+    }
+
+    pub fn update(&mut self, msg: Message) {
+        match msg {
+            Message::Tick() => self.buffer = 1 - self.buffer,
+            Message::KeyEvent(e) => self.event_tx.send(e).unwrap(),
+        }
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        Subscription::batch(vec![
+            iced::time::every(std::time::Duration::from_millis(20)).map(|_| Message::Tick()),
+            event::listen_with(|event, _| match event {
+                Event::Keyboard(e) => Some(e),
+                _ => None,
+            })
+            .map(Message::KeyEvent),
+        ])
+    }
+}
+/* ********************************************* */
+/* ********************************************* */
+/* ********************************************* */
+/* ********************************************* */
+/* ********************************************* */
 
 struct Bus {
     memory: [[u8; 0x4000]; 4],
@@ -42,15 +105,11 @@ struct Bus {
 }
 
 impl Bus {
-    pub fn new(
-        bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
-        keyboard_receiver: Receiver<Vec<Key>>,
-        redraw_sender: Sender<usize>,
-    ) -> Self {
+    pub fn new(bitmaps: [Arc<Mutex<Vec<u8>>>; 2], event_rx: Receiver<KeyEvent>) -> Self {
         let mut path: std::path::PathBuf = env::current_dir().unwrap().join("bin");
         // path = path.join("ulatest3.tap");
-        // path = path.join("ManicMiner.tap");
-        path = path.join("AquaPlane.tap");
+        path = path.join("ManicMiner.tap");
+        // path = path.join("AquaPlane.tap");
 
         let tap = match Tap::new(&path) {
             Ok(tap) => {
@@ -66,7 +125,7 @@ impl Bus {
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
-            ula: ULA::new(bitmaps, keyboard_receiver, redraw_sender),
+            ula: ULA::new(bitmaps, event_rx),
             tap,
             // screen: Screen::new(scr_bitmap),
         }

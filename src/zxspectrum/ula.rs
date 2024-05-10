@@ -1,9 +1,10 @@
-use crate::signals::{SignalReq, Signals};
-use minifb::Key;
-use std::sync::{
-    mpsc::{Receiver, Sender},
-    Arc, Mutex,
+use iced::keyboard::{
+    key::{self, Named},
+    Event as KeyEvent, Key,
 };
+
+use crate::signals::{SignalReq, Signals};
+use std::sync::{mpsc::Receiver, Arc, Mutex};
 
 pub const SRC_SIZE: usize = WIDTH * WIDTH + 1;
 pub const WIDTH: usize = 448;
@@ -12,8 +13,8 @@ pub const HEIGHT: usize = 312;
 // pub const SCREEN_HEIGHT: usize = 296;
 
 const PALETTE: [u32; 16] = [
-    0x00000000, 0x002030c0, 0x00c04010, 0x00c040c0, 0x0040b010, 0x0050c0b0, 0x00e0c010, 0x00c0c0c0,
-    0x00000000, 0x003040ff, 0x00ff4030, 0x00ff70f0, 0x0050e010, 0x0050e0ff, 0x00ffe850, 0x00ffffff,
+    0x000000ff, 0x2030c0ff, 0xc04010ff, 0xc040c0ff, 0x40b010ff, 0x50c0b0ff, 0xe0c010ff, 0xc0c0c0ff,
+    0x000000ff, 0x3040ffff, 0xff4030ff, 0xff70f0ff, 0x50e010ff, 0x50e0ffff, 0xffe850ff, 0xffffffff,
 ];
 
 // trait ULAListener {
@@ -45,11 +46,10 @@ pub struct ULA {
 
     pub signals: Signals,
 
-    bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
     data: Vec<u32>,
-    keyboard_receiver: Receiver<Vec<Key>>,
-    redraw_sender: Sender<usize>,
+    bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
     buffer: usize,
+    event_rx: Receiver<KeyEvent>,
 }
 
 pub enum ULASignal {
@@ -57,11 +57,7 @@ pub enum ULASignal {
 }
 
 impl ULA {
-    pub fn new(
-        bitmaps: [Arc<Mutex<Vec<u32>>>; 2],
-        keyboard_receiver: Receiver<Vec<Key>>,
-        redraw_sender: Sender<usize>,
-    ) -> Self {
+    pub fn new(bitmaps: [Arc<Mutex<Vec<u8>>>; 2], event_rx: Receiver<KeyEvent>) -> Self {
         ULA {
             // listener: None,
             // cpu,
@@ -89,9 +85,8 @@ impl ULA {
 
             bitmaps,
             data: vec![0; 8],
-            keyboard_receiver,
-            redraw_sender,
             buffer: 0,
+            event_rx,
         }
     }
 
@@ -116,11 +111,6 @@ impl ULA {
         if self.sound_frame == 50 {
             self.sound_frame = 0;
             // self.sound.tick(self.buzzer);
-        }
-
-        match self.keyboard_receiver.try_recv() {
-            Ok(keys) => self.on_key(keys),
-            Err(_) => {}
         }
 
         let in_screen = (0..256).contains(&self.col) && (0..192).contains(&self.row);
@@ -190,7 +180,13 @@ impl ULA {
         self.ts += 1;
 
         let (x, y) = self.get_xy(self.col, self.row);
-        self.bitmaps[self.buffer].lock().unwrap()[x + (y * WIDTH)] = self.data.remove(0);
+        let d = self.data.remove(0).to_be_bytes();
+        let mut bm = self.bitmaps[self.buffer].lock().unwrap();
+        bm[((x + (y * WIDTH)) * 4) + 0] = d[0];
+        bm[((x + (y * WIDTH)) * 4) + 1] = d[1];
+        bm[((x + (y * WIDTH)) * 4) + 2] = d[2];
+        bm[((x + (y * WIDTH)) * 4) + 3] = d[3];
+        drop(bm);
 
         self.col += 1;
         if self.col == WIDTH {
@@ -208,6 +204,11 @@ impl ULA {
         } else {
             self.signals.interrupt = false;
         }
+
+        match self.event_rx.try_recv() {
+            Ok(event) => self.on_key(event),
+            Err(_) => (),
+        }
     }
 
     fn get_xy(&self, col: usize, row: usize) -> (usize, usize) {
@@ -224,7 +225,6 @@ impl ULA {
     }
 
     fn frame_done(&mut self) {
-        self.redraw_sender.send(self.buffer).unwrap();
         self.buffer = 1 - self.buffer;
 
         // let start = Instant::now();
@@ -297,87 +297,97 @@ impl ULA {
         colors
     }
 
-    fn on_key(&mut self, keys: Vec<Key>) {
-        // println!("keys: {:?}", keys);
-        self.keyboard_row = [0; 8];
-        for key in keys {
-            match key {
-                Key::Key1 => self.set_bit(3, 1),
-                Key::Key2 => self.set_bit(3, 2),
-                Key::Key3 => self.set_bit(3, 3),
-                Key::Key4 => self.set_bit(3, 4),
-                Key::Key5 => self.set_bit(3, 5),
+    fn on_key(&mut self, event: KeyEvent) {
+        // println!("event: {:?}", event);
+        let (key, pressed) = match event {
+            KeyEvent::KeyPressed { key, .. } => (key, true),
+            KeyEvent::KeyReleased { key, .. } => (key, false),
+            KeyEvent::ModifiersChanged(_) => return,
+        };
 
-                Key::Key0 => self.set_bit(4, 1),
-                Key::Key9 => self.set_bit(4, 2),
-                Key::Key8 => self.set_bit(4, 3),
-                Key::Key7 => self.set_bit(4, 4),
-                Key::Key6 => self.set_bit(4, 5),
+        match key.as_ref() {
+            // Key::Unidentified => todo!(),
+            Key::Character("1") => self.set_bit(3, 1, pressed),
+            Key::Character("2") => self.set_bit(3, 2, pressed),
+            Key::Character("3") => self.set_bit(3, 3, pressed),
+            Key::Character("4") => self.set_bit(3, 4, pressed),
+            Key::Character("5") => self.set_bit(3, 5, pressed),
 
-                Key::Q => self.set_bit(2, 1),
-                Key::W => self.set_bit(2, 2),
-                Key::E => self.set_bit(2, 3),
-                Key::R => self.set_bit(2, 4),
-                Key::T => self.set_bit(2, 5),
+            Key::Character("0") => self.set_bit(4, 1, pressed),
+            Key::Character("9") => self.set_bit(4, 2, pressed),
+            Key::Character("8") => self.set_bit(4, 3, pressed),
+            Key::Character("7") => self.set_bit(4, 4, pressed),
+            Key::Character("6") => self.set_bit(4, 5, pressed),
 
-                Key::P => self.set_bit(5, 1),
-                Key::O => self.set_bit(5, 2),
-                Key::I => self.set_bit(5, 3),
-                Key::U => self.set_bit(5, 4),
-                Key::Y => self.set_bit(5, 5),
+            Key::Character("q") => self.set_bit(2, 1, pressed),
+            Key::Character("w") => self.set_bit(2, 2, pressed),
+            Key::Character("e") => self.set_bit(2, 3, pressed),
+            Key::Character("r") => self.set_bit(2, 4, pressed),
+            Key::Character("t") => self.set_bit(2, 5, pressed),
 
-                Key::A => self.set_bit(1, 1),
-                Key::S => self.set_bit(1, 2),
-                Key::D => self.set_bit(1, 3),
-                Key::F => self.set_bit(1, 4),
-                Key::G => self.set_bit(1, 5),
+            Key::Character("p") => self.set_bit(5, 1, pressed),
+            Key::Character("o") => self.set_bit(5, 2, pressed),
+            Key::Character("i") => self.set_bit(5, 3, pressed),
+            Key::Character("u") => self.set_bit(5, 4, pressed),
+            Key::Character("y") => self.set_bit(5, 5, pressed),
 
-                Key::Enter => self.set_bit(6, 1),
-                Key::L => self.set_bit(6, 2),
-                Key::K => self.set_bit(6, 3),
-                Key::J => self.set_bit(6, 4),
-                Key::H => self.set_bit(6, 5),
+            Key::Character("a") => self.set_bit(1, 1, pressed),
+            Key::Character("s") => self.set_bit(1, 2, pressed),
+            Key::Character("d") => self.set_bit(1, 3, pressed),
+            Key::Character("f") => self.set_bit(1, 4, pressed),
+            Key::Character("g") => self.set_bit(1, 5, pressed),
 
-                Key::LeftShift | Key::RightShift => self.set_bit(0, 1),
-                Key::Z => self.set_bit(0, 2),
-                Key::X => self.set_bit(0, 3),
-                Key::C => self.set_bit(0, 4),
-                Key::V => self.set_bit(0, 5),
+            Key::Named(Named::Enter) => self.set_bit(6, 1, pressed),
+            Key::Character("l") => self.set_bit(6, 2, pressed),
+            Key::Character("k") => self.set_bit(6, 3, pressed),
+            Key::Character("j") => self.set_bit(6, 4, pressed),
+            Key::Character("h") => self.set_bit(6, 5, pressed),
 
-                Key::Space => self.set_bit(7, 1),
-                Key::LeftAlt | Key::RightAlt => self.set_bit(7, 2),
-                Key::M => self.set_bit(7, 3),
-                Key::N => self.set_bit(7, 4),
-                Key::B => self.set_bit(7, 5),
+            Key::Named(Named::Shift) => self.set_bit(0, 1, pressed),
+            Key::Character("z") => self.set_bit(0, 2, pressed),
+            Key::Character("x") => self.set_bit(0, 3, pressed),
+            Key::Character("c") => self.set_bit(0, 4, pressed),
+            Key::Character("v") => self.set_bit(0, 5, pressed),
 
-                Key::Up => {
-                    self.set_bit(0, 1);
-                    self.set_bit(4, 4);
-                }
-                Key::Down => {
-                    self.set_bit(0, 1);
-                    self.set_bit(4, 5);
-                }
-                Key::Left => {
-                    self.set_bit(0, 1);
-                    self.set_bit(3, 5);
-                }
-                Key::Right => {
-                    self.set_bit(0, 1);
-                    self.set_bit(4, 3);
-                }
-                Key::Backspace => {
-                    self.set_bit(0, 1);
-                    self.set_bit(4, 1);
-                }
-                _ => (),
+            Key::Named(Named::Space) => self.set_bit(7, 1, pressed),
+            Key::Named(Named::Alt) => self.set_bit(7, 2, pressed),
+            Key::Character("m") => self.set_bit(7, 3, pressed),
+            Key::Character("n") => self.set_bit(7, 4, pressed),
+            Key::Character("b") => self.set_bit(7, 5, pressed),
+
+            Key::Named(Named::ArrowUp) => {
+                self.set_bit(0, 1, pressed);
+                self.set_bit(4, 4, pressed);
             }
+            Key::Named(Named::ArrowDown) => {
+                self.set_bit(0, 1, pressed);
+                self.set_bit(4, 5, pressed);
+            }
+            Key::Named(Named::ArrowLeft) => {
+                self.set_bit(0, 1, pressed);
+                self.set_bit(3, 5, pressed);
+            }
+            Key::Named(Named::ArrowRight) => {
+                self.set_bit(0, 1, pressed);
+                self.set_bit(4, 3, pressed);
+            }
+            Key::Named(Named::Backspace) => {
+                self.set_bit(0, 1, pressed);
+                self.set_bit(4, 1, pressed);
+            }
+
+            Key::Character(c) => println!("Unknown key: {}", c),
+            _ => (),
         }
     }
 
-    fn set_bit(&mut self, row: usize, bit: usize) {
+    fn set_bit(&mut self, row: usize, bit: usize, set: bool) {
         let b = 1 << (bit - 1);
-        self.keyboard_row[row] |= b;
+        if set {
+            self.keyboard_row[row] |= b;
+        } else {
+            self.keyboard_row[row] &= !b;
+        }
     }
 }
 

@@ -4,19 +4,29 @@ use iced::keyboard::{
 };
 
 use crate::signals::{SignalReq, Signals};
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    mpsc::Receiver,
-    Arc, Mutex,
+use std::{
+    cmp::min,
+    error::Error,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::Receiver,
+        Arc, Mutex,
+    },
 };
 
 use super::zx48k::UISignals;
 
-pub const SRC_SIZE: usize = WIDTH * WIDTH + 1;
-pub const WIDTH: usize = 448;
-pub const HEIGHT: usize = 312;
-// pub const SCREEN_WIDTH: usize = 352;
-// pub const SCREEN_HEIGHT: usize = 296;
+pub const SRC_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT + 1;
+
+const WIDTH: usize = 448;
+const HEIGHT: usize = 312;
+
+pub const SCREEN_WIDTH: usize = 256 + (SCREEN_BORDER * 2);
+pub const SCREEN_HEIGHT: usize = 192 + (SCREEN_BORDER * 2);
+const SCREEN_BORDER: usize = 48;
+
+#[derive(Debug)]
+pub struct SomeError; // No fields.
 
 const PALETTE: [u32; 16] = [
     0x000000ff, 0x2030c0ff, 0xc04010ff, 0xc040c0ff, 0x40b010ff, 0x50c0b0ff, 0xe0c010ff, 0xc0c0c0ff,
@@ -47,7 +57,7 @@ pub struct ULA {
     attr_data: u8,
     screen_data_2: u8,
     attr_data_2: u8,
-    content: bool,
+    pub content: bool,
     ts: usize,
 
     pub signals: Signals,
@@ -174,8 +184,9 @@ impl ULA {
                     self.data.append(colors.to_vec().as_mut());
                 }
 
-                9 | 10 | 11 | 12 | 13 => (),
-                14 | 15 => {
+                9 | 10 | 11 => {}
+
+                12 | 13 | 14 | 15 => {
                     self.content = false;
                 }
                 _ => panic!("{} {}", self.ts, self.ts % 16),
@@ -191,14 +202,16 @@ impl ULA {
 
         self.ts += 1;
 
-        let (x, y) = self.get_xy(self.col, self.row);
         let d = self.data.remove(0).to_be_bytes();
-        let mut bm = self.bitmaps[self.buffer].lock().unwrap();
-        bm[((x + (y * WIDTH)) * 4) + 0] = d[0];
-        bm[((x + (y * WIDTH)) * 4) + 1] = d[1];
-        bm[((x + (y * WIDTH)) * 4) + 2] = d[2];
-        bm[((x + (y * WIDTH)) * 4) + 3] = d[3];
-        drop(bm);
+        if let Ok((x, y)) = self.get_xy(self.col, self.row) {
+            let mut bm = self.bitmaps[self.buffer].lock().unwrap();
+            let idx = (x + (y * SCREEN_WIDTH)) * 4;
+            bm[idx + 0] = d[0];
+            bm[idx + 1] = d[1];
+            bm[idx + 2] = d[2];
+            bm[idx + 3] = d[3];
+            drop(bm);
+        }
 
         self.col += 1;
         if self.col == WIDTH {
@@ -223,9 +236,9 @@ impl ULA {
         }
     }
 
-    fn get_xy(&self, col: usize, row: usize) -> (usize, usize) {
-        let mut x = col + 24;
-        let mut y = row + 48;
+    fn get_xy(&self, col: usize, row: usize) -> Result<(usize, usize), SomeError> {
+        let mut x = col + SCREEN_BORDER - 8;
+        let mut y = row + SCREEN_BORDER;
         if x >= WIDTH {
             x -= WIDTH;
             y += 1;
@@ -233,7 +246,11 @@ impl ULA {
         if y >= HEIGHT {
             y -= HEIGHT;
         }
-        (x, y)
+
+        if (x < SCREEN_WIDTH) && (y < SCREEN_HEIGHT) {
+            return Ok((x, y));
+        }
+        Err(SomeError)
     }
 
     fn frame_done(&mut self) {
@@ -410,16 +427,3 @@ impl ULA {
         self.keyboard_row = [0; 8];
     }
 }
-
-// fn getXY( col: usize, row:usize) -> (usize,usize) {
-//     var x = col+24
-//     var y = row+48
-//     if x >= width {
-//         x -= width
-//         y += 1
-//     }
-//     if y >= height {
-//         y -= height
-//     }
-//     return (x,y)
-// }

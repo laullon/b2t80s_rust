@@ -12,11 +12,10 @@ use iced::widget::{button, column, container, image, row, text, tooltip, Image};
 use iced::{event, subscription, Alignment, ContentFit, Element, Event, Length, Subscription};
 use rfd::FileDialog;
 
-use crate::zxspectrum::ula;
 use crate::{signals::SignalReq, z80::cpu::CPU};
 
 use super::tap::Tap;
-use super::ula::{HEIGHT, ULA, WIDTH};
+use super::ula::{SCREEN_HEIGHT, SCREEN_WIDTH, SRC_SIZE, ULA};
 
 use iced::keyboard::Event as KeyEvent;
 
@@ -44,11 +43,11 @@ pub enum Message {
 
 impl Default for Zx48k {
     fn default() -> Self {
-        let bitmap: Vec<u8> = vec![0; WIDTH * HEIGHT * 4];
+        let bitmap: Vec<u8> = vec![0; SRC_SIZE * 4];
         let ula_bitmap = Arc::new(Mutex::new(bitmap));
         let scr_bitmap = Arc::clone(&ula_bitmap);
 
-        let bitmap_2: Vec<u8> = vec![0; WIDTH * HEIGHT * 4];
+        let bitmap_2: Vec<u8> = vec![0; SRC_SIZE * 4];
         let ula_bitmap_2 = Arc::new(Mutex::new(bitmap_2));
         let scr_bitmap_2 = Arc::clone(&ula_bitmap_2);
 
@@ -72,8 +71,8 @@ impl Default for Zx48k {
 impl Zx48k {
     pub fn view(&self) -> Element<'_, Message> {
         let screen = image::Handle::from_rgba(
-            WIDTH as u32,
-            HEIGHT as u32,
+            SCREEN_WIDTH as u32,
+            SCREEN_HEIGHT as u32,
             self.bitmaps[self.ui_signals.active_buffer.load(Ordering::Relaxed)]
                 .lock()
                 .unwrap()
@@ -82,7 +81,7 @@ impl Zx48k {
 
         let screen = Image::<image::Handle>::new(screen)
             .filter_method(image::FilterMethod::Nearest)
-            .content_fit(ContentFit::Contain)
+            .content_fit(ContentFit::Cover)
             .width(Length::Fill)
             .height(Length::Fill);
 
@@ -128,7 +127,7 @@ impl Zx48k {
                 loop {
                     if signals.frame_done.load(Ordering::Relaxed) {
                         signals.frame_done.store(false, Ordering::Relaxed);
-                        output.send(Message::Tick()).await;
+                        let _ = output.send(Message::Tick()).await;
                     }
                 }
             },
@@ -196,18 +195,20 @@ impl Bus {
                     self.bus_tick();
                     self.ula.tick();
                     self.bus_tick();
-                    let trap = self.cpu.tick();
-                    self.bus_tick();
+                    if !(self.ula.content && (self.cpu.signals.addr & 0xc000 == 0x4000)) {
+                        let trap = self.cpu.tick();
+                        self.bus_tick();
 
-                    match trap {
-                        Some(0x056B) => {
-                            self.ula.clean_keyboard();
-                            match self.tap {
-                                Some(_) => self.load_tap_block(),
-                                None => self.load_tap_file(),
+                        match trap {
+                            Some(0x056B) => {
+                                self.ula.clean_keyboard();
+                                match self.tap {
+                                    Some(_) => self.load_tap_block(),
+                                    None => self.load_tap_file(),
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
 
                     if self.ui_signals.do_reset.load(Ordering::Relaxed) {

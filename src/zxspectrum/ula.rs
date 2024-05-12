@@ -4,7 +4,13 @@ use iced::keyboard::{
 };
 
 use crate::signals::{SignalReq, Signals};
-use std::sync::{mpsc::Receiver, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    mpsc::Receiver,
+    Arc, Mutex,
+};
+
+use super::zx48k::UISignals;
 
 pub const SRC_SIZE: usize = WIDTH * WIDTH + 1;
 pub const WIDTH: usize = 448;
@@ -50,6 +56,7 @@ pub struct ULA {
     bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
     buffer: usize,
     event_rx: Receiver<KeyEvent>,
+    ui_signals: Arc<UISignals>,
 }
 
 pub enum ULASignal {
@@ -57,7 +64,11 @@ pub enum ULASignal {
 }
 
 impl ULA {
-    pub fn new(bitmaps: [Arc<Mutex<Vec<u8>>>; 2], event_rx: Receiver<KeyEvent>) -> Self {
+    pub fn new(
+        bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
+        event_rx: Receiver<KeyEvent>,
+        ui_signals: Arc<UISignals>,
+    ) -> Self {
         ULA {
             // listener: None,
             // cpu,
@@ -87,6 +98,7 @@ impl ULA {
             data: vec![0; 8],
             buffer: 0,
             event_rx,
+            ui_signals,
         }
     }
 
@@ -225,6 +237,10 @@ impl ULA {
     }
 
     fn frame_done(&mut self) {
+        self.ui_signals
+            .active_buffer
+            .store(self.buffer, Ordering::SeqCst);
+        self.ui_signals.frame_done.store(true, Ordering::SeqCst);
         self.buffer = 1 - self.buffer;
 
         // let start = Instant::now();
@@ -388,6 +404,10 @@ impl ULA {
         } else {
             self.keyboard_row[row] &= !b;
         }
+    }
+
+    pub(crate) fn clean_keyboard(&mut self) {
+        self.keyboard_row = [0; 8];
     }
 }
 

@@ -1,8 +1,3 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
-
 use crate::signals::{SignalReq, Signals};
 
 use super::{
@@ -104,9 +99,7 @@ impl CPU {
                     self.halt = false;
                     self.do_reset = false;
                     return None;
-                }
-
-                if self.signals.interrupt && self.regs.iff1 {
+                } else if self.signals.interrupt && self.regs.iff1 {
                     match self.regs.im {
                         0 | 1 => self.current_ops = Some(Operation::Int01),
                         2 => self.current_ops = Some(Operation::Int02),
@@ -830,8 +823,8 @@ impl CPU {
 
         let pos = (self.regs.i as u16) << 8;
 
-        self.scheduler.push(Operation::MrAddrR(pos, 8)); // P
-        self.scheduler.push(Operation::MrAddrR(pos + 1, 9)); // C
+        self.scheduler.push(Operation::MrAddrR(pos, 9)); // P
+        self.scheduler.push(Operation::MrAddrR(pos + 1, 8)); // C
         true
     }
 }

@@ -15,3 +15,6 @@ iced = { git = "https://github.com/iced-rs/iced.git", features = [
 ] }
 [profile.release]
 debug = false
+
+[profile.dev]
+opt-level = 1

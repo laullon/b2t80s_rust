@@ -1,14 +1,18 @@
 use std::borrow::BorrowMut;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self};
 use std::time::{Duration, Instant};
 use std::{env, fs::File, io::Read};
 
-use iced::widget::{container, image, Image};
-use iced::{event, ContentFit, Element, Event, Length, Subscription};
+use iced::futures::SinkExt;
+use iced::widget::{button, column, container, image, row, text, tooltip, Image};
+use iced::{event, subscription, Alignment, ContentFit, Element, Event, Length, Subscription};
 use rfd::FileDialog;
 
+use crate::zxspectrum::ula;
 use crate::{signals::SignalReq, z80::cpu::CPU};
 
 use super::tap::Tap;
@@ -18,16 +22,24 @@ use iced::keyboard::Event as KeyEvent;
 
 /* ********************************************* */
 
+#[derive(Default, Debug)]
+pub struct UISignals {
+    pub active_buffer: AtomicUsize,
+    pub do_reset: AtomicBool,
+    pub frame_done: AtomicBool,
+}
+
 pub struct Zx48k {
     bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
-    buffer: usize,
     event_tx: Sender<KeyEvent>,
+    ui_signals: Arc<UISignals>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick(),
     KeyEvent(KeyEvent),
+    Reset,
 }
 
 impl Default for Zx48k {
@@ -40,15 +52,19 @@ impl Default for Zx48k {
         let ula_bitmap_2 = Arc::new(Mutex::new(bitmap_2));
         let scr_bitmap_2 = Arc::clone(&ula_bitmap_2);
 
+        let ui_signals = Arc::new(UISignals::default());
+        let ui_signals_cloned = ui_signals.clone();
+
         let (event_tx, event_rx) = channel::<KeyEvent>();
+
         thread::spawn(move || {
-            Bus::new([ula_bitmap, ula_bitmap_2], event_rx).run();
+            Bus::new([ula_bitmap, ula_bitmap_2], event_rx, ui_signals).run();
         });
 
         Self {
             bitmaps: [scr_bitmap, scr_bitmap_2],
-            buffer: 0,
             event_tx,
+            ui_signals: ui_signals_cloned,
         }
     }
 }
@@ -58,7 +74,10 @@ impl Zx48k {
         let screen = image::Handle::from_rgba(
             WIDTH as u32,
             HEIGHT as u32,
-            self.bitmaps[self.buffer].lock().unwrap().clone(),
+            self.bitmaps[self.ui_signals.active_buffer.load(Ordering::Relaxed)]
+                .lock()
+                .unwrap()
+                .clone(),
         );
 
         let screen = Image::<image::Handle>::new(screen)
@@ -67,27 +86,72 @@ impl Zx48k {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let image = container(screen).width(Length::Fill).width(Length::Fill);
+        let controls = row![action(text("Reset"), "Reset", Some(Message::Reset)),]
+            .spacing(10)
+            .align_items(Alignment::Center);
 
-        image.into()
+        let content = column![controls, screen].height(Length::Fill);
+
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     pub fn update(&mut self, msg: Message) {
         match msg {
-            Message::Tick() => self.buffer = 1 - self.buffer,
+            Message::Tick() => (),
             Message::KeyEvent(e) => self.event_tx.send(e).unwrap(),
+            Message::Reset => self.ui_signals.do_reset.store(true, Ordering::Relaxed),
         }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch(vec![
-            iced::time::every(std::time::Duration::from_millis(20)).map(|_| Message::Tick()),
+            self.ula_events(),
+            // iced::time::every(std::time::Duration::from_millis(10)).map(|_| Message::Tick()),
             event::listen_with(|event, _| match event {
                 Event::Keyboard(e) => Some(e),
                 _ => None,
             })
             .map(Message::KeyEvent),
         ])
+    }
+
+    fn ula_events(&self) -> Subscription<Message> {
+        struct SomeWorker;
+        let signals = self.ui_signals.clone();
+        subscription::channel(
+            std::any::TypeId::of::<SomeWorker>(),
+            0,
+            |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+                loop {
+                    if signals.frame_done.load(Ordering::Relaxed) {
+                        signals.frame_done.store(false, Ordering::Relaxed);
+                        output.send(Message::Tick()).await;
+                    }
+                }
+            },
+        )
+    }
+}
+
+fn action<'a, Message: Clone + 'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: &'a str,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    let action = button(container(content));
+    if let Some(on_press) = on_press {
+        tooltip(
+            action.on_press(on_press),
+            label,
+            tooltip::Position::FollowCursor,
+        )
+        .style(container::rounded_box)
+        .into()
+    } else {
+        action.style(button::secondary).into()
     }
 }
 
@@ -100,15 +164,22 @@ struct Bus {
     ula: ULA,
 
     tap: Option<Tap>,
+
+    ui_signals: Arc<UISignals>,
 }
 
 impl Bus {
-    pub fn new(bitmaps: [Arc<Mutex<Vec<u8>>>; 2], event_rx: Receiver<KeyEvent>) -> Self {
+    pub fn new(
+        bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
+        event_rx: Receiver<KeyEvent>,
+        ui_signals: Arc<UISignals>,
+    ) -> Self {
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
-            ula: ULA::new(bitmaps, event_rx),
+            ula: ULA::new(bitmaps, event_rx, ui_signals.clone()),
             tap: None,
+            ui_signals,
         }
     }
 
@@ -129,36 +200,20 @@ impl Bus {
                     self.bus_tick();
 
                     match trap {
-                        Some(0x056B) => match self.tap {
-                            Some(_) => self.load_data_block(),
-                            None => {
-                                let path: std::path::PathBuf = env::current_dir().unwrap();
-                                let file = FileDialog::new()
-                                    .add_filter("tap", &["tap"])
-                                    .set_directory(path)
-                                    .pick_file();
-
-                                match file {
-                                    Some(path) => {
-                                        self.tap = match Tap::new(&path) {
-                                            Ok(tap) => {
-                                                println!(
-                                                    "Successfully loaded TAP file: {}",
-                                                    tap.name
-                                                );
-                                                Some(tap)
-                                            }
-                                            Err(err) => {
-                                                eprintln!("Error loading TAP file: {}", err);
-                                                None
-                                            }
-                                        };
-                                    }
-                                    None => self.cpu.do_reset = true,
-                                };
+                        Some(0x056B) => {
+                            self.ula.clean_keyboard();
+                            match self.tap {
+                                Some(_) => self.load_tap_block(),
+                                None => self.load_tap_file(),
                             }
-                        },
+                        }
                         _ => {}
+                    }
+
+                    if self.ui_signals.do_reset.load(Ordering::Relaxed) {
+                        self.cpu.do_reset = true;
+                        self.tap = None;
+                        self.ui_signals.do_reset.store(false, Ordering::Relaxed);
                     }
                 }
                 let used = start.elapsed();
@@ -169,6 +224,30 @@ impl Bus {
             }
             println!("3.5MHz: {:?} ({:?})", total, start_35.elapsed());
         }
+    }
+
+    fn load_tap_file(self: &mut Self) {
+        let path: std::path::PathBuf = env::current_dir().unwrap();
+        let file = FileDialog::new()
+            .add_filter("tap", &["tap"])
+            .set_directory(path)
+            .pick_file();
+
+        match file {
+            Some(path) => {
+                self.tap = match Tap::new(&path) {
+                    Ok(tap) => {
+                        println!("Successfully loaded TAP file: {}", tap.name);
+                        Some(tap)
+                    }
+                    Err(err) => {
+                        eprintln!("Error loading TAP file: {}", err);
+                        None
+                    }
+                };
+            }
+            None => self.cpu.do_reset = true,
+        };
     }
 
     fn mem_read(self: &mut Self, addr: u16) -> u8 {
@@ -234,7 +313,7 @@ impl Bus {
         self.cpu.signals.interrupt = self.ula.signals.interrupt;
     }
 
-    fn load_data_block(&mut self) {
+    fn load_tap_block(&mut self) {
         let data: Vec<u8> = match self.tap.borrow_mut() {
             Some(tap) => tap
                 .next_block()
@@ -270,6 +349,11 @@ impl Bus {
                     self.mem_write(start_address.wrapping_add(i as u16), loaded_byte);
                     checksum ^= loaded_byte;
                 }
+
+                // if start_address == 0x4000 {
+                //     thread::sleep(Duration::from_secs(5));
+                // }
+
                 println!(
                     "{} == {} : {}",
                     checksum,

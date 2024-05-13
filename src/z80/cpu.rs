@@ -56,7 +56,7 @@ impl CPU {
             },
             fetched: Fetched::default(),
             scheduler: Vec::new(),
-            do_reset: true,
+            do_reset: false,
             wait: false,
             halt: false,
             current_ops: Some(Operation::Fetch),
@@ -88,6 +88,7 @@ impl CPU {
                 self.regs.index_mode = IndexMode::Hl;
 
                 if self.do_reset {
+                    println!("Reset");
                     self.regs.f.set(0xff);
                     self.regs.a = 0xff;
                     self.regs.i = 0;

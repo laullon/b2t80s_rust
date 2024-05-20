@@ -1,18 +1,7 @@
-use iced::keyboard::{
-    key::{self, Named},
-    Event as KeyEvent, Key,
-};
+use iced::keyboard::{key::Named, Event as KeyEvent, Key};
 
 use crate::signals::{SignalReq, Signals};
-use std::{
-    cmp::min,
-    error::Error,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc::Receiver,
-        Arc, Mutex,
-    },
-};
+use std::sync::{atomic::Ordering, mpsc::Receiver, Arc, Mutex};
 
 use super::zx48k::UISignals;
 

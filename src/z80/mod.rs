@@ -1,4 +1,5 @@
 pub mod cpu;
+mod diss;
 mod ops_codes;
 mod registers;
 

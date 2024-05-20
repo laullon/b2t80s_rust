@@ -48,13 +48,13 @@ pub fn ld_r_n(cpu: &mut CPU, y: u8) {
         (6, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
         (6, IndexMode::Ix | IndexMode::Iy, Some(_), None) => cpu.scheduler.push(Operation::MrPcN),
         (6, IndexMode::Ix | IndexMode::Iy, Some(d), Some(n)) => {
-            cpu.fetched.op_code = None;
+            cpu.fetched.done = true;
             cpu.scheduler.push(Operation::Delay(2));
             cpu.scheduler.push(Operation::Mw8(cpu.regs.get_idx(d), n));
         }
         (_, _, _, None) => cpu.scheduler.push(Operation::MrPcN),
         (6, _, _, Some(v)) => {
-            cpu.fetched.op_code = None;
+            cpu.fetched.done = true;
             cpu.scheduler.push(Operation::Mw8(cpu.regs.get_rr(2), v))
         }
         (_, _, _, Some(v)) => cpu.regs.set_r(y, v),
@@ -69,13 +69,13 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
             (_, 6, 0) => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
             (_, 6, 1) => {
                 cpu.regs.set_r(y, cpu.fetched.n.unwrap());
-                cpu.fetched.op_code = None;
+                cpu.fetched.done = true;
             }
 
             (6, _, 0) => cpu
                 .scheduler
                 .push(Operation::Mw8(cpu.regs.get_rr(2), cpu.regs.get_r(z))),
-            (6, _, 1) => cpu.fetched.op_code = None,
+            (6, _, 1) => cpu.fetched.done = true,
 
             _ => {
                 let v = cpu.regs.get_r(z);
@@ -95,7 +95,7 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
                 }
                 cpu.regs.set_r(y, cpu.fetched.n.unwrap());
                 cpu.scheduler.push(Operation::Delay(5));
-                cpu.fetched.op_code = None;
+                cpu.fetched.done = true;
             }
 
             // LD (ix+d), r[z]
@@ -107,9 +107,9 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
                 cpu.scheduler
                     .push(Operation::Mw8(get_idx, cpu.regs.get_r(z)));
                 cpu.scheduler.push(Operation::Delay(5));
-                cpu.fetched.op_code = None;
+                cpu.fetched.done = true;
             }
-            (6, _, 2) => cpu.fetched.op_code = None,
+            (6, _, 2) => cpu.fetched.done = true,
 
             _ => {
                 let v = cpu.regs.get_r(z);
@@ -117,42 +117,6 @@ pub fn ld_r_r(cpu: &mut CPU, y: u8, z: u8) {
             }
         },
     }
-
-    // match (y, z, cpu.regs.index_mode, cpu.fetched.d, cpu.fetched.n) {
-    //     (6, _, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
-    //     (6, _, IndexMode::Ix | IndexMode::Iy, Some(d), None) => {
-    //         let addr = cpu.regs.get_idx(d);
-    //         cpu.regs.index_mode = IndexMode::Hl;
-    //         cpu.scheduler.push(Operation::Mw8(addr, cpu.regs.get_r(z)));
-    //         cpu.fetched.op_code = None;
-    //         cpu.scheduler.push(Operation::Delay(5));
-    //     }
-
-    //     (_, 6, IndexMode::Ix | IndexMode::Iy, None, None) => cpu.scheduler.push(Operation::MrPcD),
-    //     (_, 6, IndexMode::Ix | IndexMode::Iy, Some(d), None) => {
-    //         cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_idx(d)))
-    //     }
-    //     (_, 6, IndexMode::Ix | IndexMode::Iy, Some(_), Some(n)) => {
-    //         cpu.scheduler.push(Operation::Delay(5));
-    //         cpu.fetched.op_code = None;
-    //         cpu.regs.index_mode = IndexMode::Hl;
-    //         cpu.regs.set_r(y, n);
-    //     }
-
-    //     (6, _, _, _, _) => {
-    //         cpu.fetched.op_code = None;
-    //         cpu.scheduler
-    //             .push(Operation::Mw8(cpu.regs.get_rr(2), cpu.regs.get_r(z)));
-    //     }
-    //     (_, 6, _, _, _) => match cpu.fetched.n {
-    //         None => cpu.scheduler.push(Operation::MrAddrN(cpu.regs.get_rr(2))),
-    //         Some(n) => cpu.regs.set_r(y, n),
-    //     },
-    //     _ => {
-    //         let v = cpu.regs.get_r(z);
-    //         cpu.regs.set_r(y, v);
-    //     }
-    // };
 }
 
 pub fn inc_rr(cpu: &mut CPU, p: u8) {
@@ -184,7 +148,7 @@ fn inc_dec_r(cpu: &mut CPU, r: u8, is_inc: bool) {
                 } else {
                     v = dec(cpu, v);
                 }
-                cpu.fetched.op_code = None;
+                cpu.fetched.done = true;
                 cpu.scheduler.push(Operation::Delay(1));
                 cpu.scheduler.push(Operation::Mw8(cpu.regs.get_rr(2), v));
             }
@@ -200,7 +164,7 @@ fn inc_dec_r(cpu: &mut CPU, r: u8, is_inc: bool) {
                     v = dec(cpu, v);
                 }
 
-                cpu.fetched.op_code = None;
+                cpu.fetched.done = true;
                 cpu.scheduler.push(Operation::Delay(6));
                 cpu.scheduler.push(Operation::Mw8(cpu.regs.get_idx(d), v));
             }
@@ -513,14 +477,14 @@ pub fn call(cpu: &mut CPU, y: Option<u8>) {
                 cpu.scheduler
                     .push(Operation::Mw16(cpu.regs.sp, cpu.regs.pc));
                 cpu.regs.pc = nn;
-                cpu.fetched.op_code = None;
+                cpu.fetched.done = true;
             }
         }
     }
 }
 
 pub fn push(cpu: &mut CPU, r: u8) {
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
     cpu.regs.sp = cpu.regs.sp.wrapping_sub(2);
     cpu.scheduler.push(Operation::Delay(1));
     cpu.scheduler
@@ -541,7 +505,7 @@ pub fn pop(cpu: &mut CPU, r: u8) {
 }
 
 pub fn rst(cpu: &mut CPU, y: u8) {
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
     cpu.regs.sp = cpu.regs.sp.wrapping_sub(2);
     cpu.scheduler.push(Operation::Delay(1));
     cpu.scheduler
@@ -636,14 +600,15 @@ pub fn set(y: u8, v: u8) -> u8 {
 }
 
 pub fn out_na(cpu: &mut CPU) {
-    match cpu.fetched.n {
-        None => cpu.scheduler.push(Operation::MrPcN),
-        Some(n) => {
-            let port = (n as u16) | (cpu.regs.a as u16) << 8;
+    match cpu.fetched.decode_step {
+        0 => cpu.scheduler.push(Operation::MrPcN),
+        1 => {
+            let port = (cpu.fetched.n.unwrap() as u16) | (cpu.regs.a as u16) << 8;
             cpu.scheduler.push(Operation::Delay(1));
             cpu.scheduler.push(Operation::Pw8(port, cpu.regs.a));
-            cpu.fetched.op_code = None;
         }
+        2 => {}
+        _ => unreachable!("Invalid out_na instruction"),
     }
 }
 
@@ -654,7 +619,7 @@ pub fn in_na(cpu: &mut CPU) {
             let port = (cpu.regs.a as u16) << 8 | n as u16;
             cpu.scheduler.push(Operation::Delay(1));
             cpu.scheduler.push(Operation::PrR(port, Some(7), false));
-            cpu.fetched.op_code = None;
+            cpu.fetched.done = true;
         }
     }
 }
@@ -668,7 +633,7 @@ pub fn ex_sp_hl(cpu: &mut CPU) {
         Some(nn) => {
             let hl = cpu.regs.get_rr(2);
             cpu.regs.set_rr(2, nn);
-            cpu.fetched.op_code = None;
+            cpu.fetched.done = true;
             cpu.scheduler.push(Operation::Delay(3));
             cpu.scheduler.push(Operation::Mw16(cpu.regs.sp, hl));
         }
@@ -679,27 +644,27 @@ pub fn in_c(cpu: &mut CPU) {
     cpu.scheduler
         .push(Operation::PrR(cpu.regs.get_rr(0), None, true));
     cpu.scheduler.push(Operation::Delay(1));
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
 }
 
 pub fn in_r_c(cpu: &mut CPU, r: u8) {
     cpu.scheduler
         .push(Operation::PrR(cpu.regs.get_rr(0), Some(r), true));
     cpu.scheduler.push(Operation::Delay(1));
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
 }
 
 pub fn out_c(cpu: &mut CPU) {
     cpu.scheduler.push(Operation::Pw8(cpu.regs.get_rr(0), 0));
     cpu.scheduler.push(Operation::Delay(1));
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
 }
 
 pub fn out_c_r(cpu: &mut CPU, r: u8) {
     cpu.scheduler
         .push(Operation::Pw8(cpu.regs.get_rr(0), cpu.regs.get_r(r)));
     cpu.scheduler.push(Operation::Delay(1));
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
 }
 
 pub fn sbc_hl(cpu: &mut CPU, ss: u16) {
@@ -719,7 +684,7 @@ pub fn sbc_hl(cpu: &mut CPU, ss: u16) {
     cpu.regs.f.h = (hl & 0xFFF) < (ss & 0xFFF) + (if cpu.regs.f.c { 1 } else { 0 }); // Set half-carry flag based on lower 12 bits
     cpu.regs.f.c = carry1 || carry2; // Set carry flag based on subtraction overflow
 
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
     cpu.scheduler.push(Operation::Delay(7));
 }
 
@@ -740,7 +705,7 @@ pub fn adc_hl(cpu: &mut CPU, ss: u16) {
     cpu.regs.f.p = OVERFLOW_ADD_TABLE[(lookup >> 4) as usize];
     cpu.regs.f.h = (hl & 0xFFF) + (ss & 0xFFF) > 0xFFF; // Set half-carry flag based on lower 12 bits
 
-    cpu.fetched.op_code = None;
+    cpu.fetched.done = true;
     cpu.scheduler.push(Operation::Delay(7));
 }
 
@@ -751,7 +716,7 @@ pub fn ld_nn_rr(cpu: &mut CPU, p: u8) {
             cpu.scheduler.push(Operation::MrPcN);
         }
         Some(nn) => {
-            cpu.fetched.op_code = None;
+            cpu.fetched.done = true;
             cpu.scheduler.push(Operation::Mw16(nn, cpu.regs.get_rr(p)));
         }
     }
@@ -792,7 +757,7 @@ pub fn rdd(cpu: &mut CPU) {
             cpu.scheduler.push(Operation::Delay(4));
             cpu.scheduler
                 .push(Operation::Mw8(cpu.regs.get_rr(2), new_n));
-            cpu.fetched.op_code = None;
+            cpu.fetched.done = true;
             cpu.regs.a = new_a;
             update_flags_after_rdd_rld(cpu);
         }
@@ -813,7 +778,7 @@ pub fn rld(cpu: &mut CPU) {
             cpu.scheduler.push(Operation::Delay(4));
             cpu.scheduler
                 .push(Operation::Mw8(cpu.regs.get_rr(2), new_n));
-            cpu.fetched.op_code = None;
+            cpu.fetched.done = true;
             cpu.regs.a = new_a;
             update_flags_after_rdd_rld(cpu);
         }

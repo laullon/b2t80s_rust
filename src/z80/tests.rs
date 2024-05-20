@@ -7,7 +7,10 @@ use std::{
 };
 use std::{io::Read, iter::zip};
 
-use crate::{signals::SignalReq, z80::cpu::CPU};
+use crate::{
+    signals::SignalReq,
+    z80::{cpu::CPU, diss::disassemble},
+};
 
 use super::registers::Registers;
 
@@ -108,9 +111,9 @@ fn test_opcodes() {
                     }
                     SignalReq::None => (),
                 }
-                println!("pc: {:04x}", cpu.regs.pc);
                 cpu.tick();
             }
+            println!(">> {}", disassemble(cpu.fetched));
             println!("------------");
             let cpu_regs = cpu.regs.dump_registers();
             let res_regs = result.registers.map(|d| format!("{:04x}", d)).join(" ");
@@ -137,7 +140,7 @@ fn test_opcodes() {
                 "scheduler not empty !!! {:?}",
                 cpu.scheduler
             );
-            assert_ne!(test.name, "dde9", "7e fail !!!");
+            // assert_ne!(test.name, "dde9", "7e fail !!!");
             println!("------------\n");
         });
 }

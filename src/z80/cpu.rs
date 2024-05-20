@@ -1,6 +1,7 @@
 use crate::signals::{SignalReq, Signals};
 
 use super::{
+    diss::disassemble,
     ops_codes::*,
     registers::{IndexMode, Registers},
 };
@@ -15,16 +16,34 @@ pub struct CPU {
     pub do_reset: bool,
     pub current_ops: Option<Operation>,
     pub current_ops_ts: u8,
+    pub log: Vec<String>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Fetched {
-    pub op_code: Option<u8>,
-    prefix: u16,
+    pub pc: u16,
+    pub op_code: u8,
+    pub prefix: u16,
     pub n: Option<u8>,
     pub nn: Option<u16>,
     pub d: Option<u8>,
     pub decode_step: u8,
+    pub done: bool,
+}
+
+impl Fetched {
+    fn new(pc: u16) -> Fetched {
+        Self {
+            pc,
+            op_code: 0,
+            prefix: 0,
+            n: None,
+            nn: None,
+            d: None,
+            decode_step: 0,
+            done: false,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -54,13 +73,14 @@ impl CPU {
                 mem: SignalReq::None,
                 port: SignalReq::None,
             },
-            fetched: Fetched::default(),
+            fetched: Fetched::new(0),
             scheduler: Vec::new(),
             do_reset: false,
             wait: false,
             halt: false,
             current_ops: Some(Operation::Fetch),
             current_ops_ts: 0,
+            log: Vec::new(),
         }
     }
 
@@ -80,11 +100,12 @@ impl CPU {
 
         if matches!(self.current_ops, None) {
             if self.scheduler.is_empty() {
-                // println!("{:#06x}", self.regs.pc);
-                // if self.log != nil {
-                //     self.log.AppendLastOP(self.fetched.getInstruction())
-                // }
-                self.fetched = Fetched::default();
+                self.log.push(disassemble(self.fetched));
+                if self.log.len() == 10 {
+                    self.log.remove(0);
+                }
+
+                self.fetched = Fetched::new(self.regs.pc);
                 self.regs.index_mode = IndexMode::Hl;
 
                 if self.do_reset {
@@ -117,6 +138,7 @@ impl CPU {
         let c = self.current_ops;
         match c {
             Some(op) => {
+                // println!("{}: {:?}", self.current_ops_ts, op);
                 let done = match op {
                     Operation::Fetch => self.fetch(),
                     Operation::MrPcN => self.mr(),
@@ -155,28 +177,39 @@ impl CPU {
     fn decode_and_run(&mut self) {
         let mut fetch_done = false;
         match (self.fetched.prefix, self.fetched.op_code, self.fetched.n) {
-            (0, Some(0xcb) | Some(0xed), None) => self.scheduler.push(Operation::Fetch),
-            (0, Some(0xdd), None) => {
+            (0, 0xcb | 0xed, None) => self.scheduler.push(Operation::Fetch),
+
+            (0, 0xdd, None) => {
                 self.scheduler.push(Operation::Fetch);
                 self.regs.index_mode = IndexMode::Ix;
             }
-            (0, Some(0xfd), None) => {
+
+            (0, 0xfd, None) => {
                 self.scheduler.push(Operation::Fetch);
                 self.regs.index_mode = IndexMode::Iy;
             }
-            (0xdd | 0xfd, Some(0xcb), None) => {
+
+            (0xdd | 0xfd, 0xcb, None) => {
                 self.scheduler.push(Operation::MrPcD);
                 self.scheduler.push(Operation::Delay(2));
                 self.scheduler.push(Operation::MrPcN);
             }
 
-            (0xdd | 0xfd, Some(0xdd) | Some(0xfd), None) => {
-                self.fetched.prefix = self.fetched.op_code.unwrap() as u16;
+            (0xdd | 0xfd, 0xdd, None) => {
+                self.fetched.prefix = 0;
+                self.scheduler.push(Operation::Fetch);
+                self.regs.index_mode = IndexMode::Ix;
             }
 
-            (0xdd | 0xfd, Some(0xcb), Some(n)) => {
+            (0xdd | 0xfd, 0xfd, None) => {
+                self.fetched.prefix = 0;
+                self.scheduler.push(Operation::Fetch);
+                self.regs.index_mode = IndexMode::Iy;
+            }
+
+            (0xdd | 0xfd, 0xcb, Some(n)) => {
                 self.fetched.prefix = (self.fetched.prefix << 8) | 0xcb;
-                self.fetched.op_code = Some(n);
+                self.fetched.op_code = n;
                 self.fetched.n = None;
                 fetch_done = true;
             }
@@ -187,19 +220,15 @@ impl CPU {
             return;
         };
 
-        let op_code = match self.fetched.op_code {
-            Some(op_code) => op_code,
-            None => return,
-        };
-        let x = (op_code & 0b11000000) >> 6;
-        let y = (op_code & 0b00111000) >> 3;
-        let z = (op_code & 0b00000111) >> 0;
-        let p = y >> 1;
-        let q = y & 0b00000001;
+        if self.fetched.done {
+            return;
+        }
+
+        let (x, y, z, p, q) = decode(self.fetched.op_code);
 
         // println!(
         //     "<<< pfx: {:04x} opc:{:02x} x:{} y:{} z:{} p:{} q:{} >>>",
-        //     self.fetched.prefix, op_code, x, y, z, p, q
+        //     self.fetched.prefix, self.fetched.op_code, x, y, z, p, q
         // );
 
         match (self.fetched.prefix, x) {
@@ -250,7 +279,7 @@ impl CPU {
                     _ => unreachable!("Invalid ed instruction y={}", y),
                 }
 
-                self.fetched.op_code = None;
+                self.fetched.done = true;
                 self.scheduler.push(Operation::Delay(1));
             }
             (1, 7, 4, _) => rdd(self),
@@ -298,11 +327,11 @@ impl CPU {
 
         match (z, r, self.regs.index_mode) {
             (6, Some(r), IndexMode::Hl) => {
-                self.fetched.op_code = None;
+                self.fetched.done = true;
                 self.scheduler.push(Operation::Mw8(self.regs.get_rr(2), r));
             }
             (_, Some(r), IndexMode::Ix | IndexMode::Iy) => {
-                self.fetched.op_code = None;
+                self.fetched.done = true;
                 self.scheduler.push(Operation::Mw8(
                     self.regs.get_idx(self.fetched.d.unwrap()),
                     r,
@@ -350,12 +379,12 @@ impl CPU {
         }
         match (z, res, self.regs.index_mode) {
             (6, Some(r), IndexMode::Hl) => {
-                self.fetched.op_code = None;
+                self.fetched.done = true;
                 self.scheduler.push(Operation::Delay(1));
                 self.scheduler.push(Operation::Mw8(self.regs.get_rr(2), r))
             }
             (_, Some(r), IndexMode::Ix | IndexMode::Iy) => {
-                self.fetched.op_code = None;
+                self.fetched.done = true;
                 self.scheduler.push(Operation::Mw8(
                     self.regs.get_idx(self.fetched.d.unwrap()),
                     r,
@@ -425,7 +454,7 @@ impl CPU {
             (1, 1) => self.regs.exx(),
             (1, 2) => self.regs.pc = self.regs.get_rr(2),
             (1, 3) => {
-                self.fetched.op_code = None;
+                self.fetched.done = true;
                 self.scheduler.push(Operation::Delay(2));
                 self.regs.sp = self.regs.get_rr(2)
             }
@@ -501,7 +530,7 @@ impl CPU {
                         self.regs.pc = self.regs.pc.wrapping_add(jump as u16);
                         self.scheduler.push(Operation::Delay(5));
                     }
-                    self.fetched.op_code = None;
+                    self.fetched.done = true;
                 }
             },
             _ => todo!("x0_z0_ops y:{}", y),
@@ -520,7 +549,7 @@ impl CPU {
             0 => ld_rr_mm(self, p),
             1 => {
                 add_hl_rr(self, p);
-                self.fetched.op_code = None;
+                self.fetched.done = true;
                 self.scheduler.push(Operation::Delay(7));
             }
             _ => panic!(),
@@ -531,7 +560,7 @@ impl CPU {
         match q {
             0 => match p {
                 0 | 1 => {
-                    self.fetched.op_code = None;
+                    self.fetched.done = true;
                     self.scheduler
                         .push(Operation::Mw8(self.regs.get_rr(p), self.regs.a));
                 }
@@ -541,7 +570,7 @@ impl CPU {
                         self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
-                        self.fetched.op_code = None;
+                        self.fetched.done = true;
                         self.scheduler
                             .push(Operation::Mw16(nn, self.regs.get_rr(p)));
                     }
@@ -552,7 +581,7 @@ impl CPU {
                         self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
-                        self.fetched.op_code = None;
+                        self.fetched.done = true;
                         self.scheduler.push(Operation::Mw8(nn, self.regs.a));
                     }
                 },
@@ -571,7 +600,7 @@ impl CPU {
                         self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
-                        self.fetched.op_code = None;
+                        self.fetched.done = true;
                         self.scheduler.push(Operation::MrAddrR(nn, 5));
                         self.scheduler.push(Operation::MrAddrR(nn + 1, 4));
                     }
@@ -582,7 +611,7 @@ impl CPU {
                         self.scheduler.push(Operation::MrPcN);
                     }
                     Some(nn) => {
-                        self.fetched.op_code = None;
+                        self.fetched.done = true;
                         self.scheduler.push(Operation::MrAddrR(nn, 7));
                     }
                 },
@@ -598,7 +627,7 @@ impl CPU {
             1 => dec_rr(self, p),
             _ => panic!(),
         }
-        self.fetched.op_code = None;
+        self.fetched.done = true;
         self.scheduler.push(Operation::Delay(2));
     }
 
@@ -615,14 +644,9 @@ impl CPU {
             2 => {
                 self.regs.m1 = false;
                 self.signals.mem = SignalReq::None;
-                match self.fetched.op_code {
-                    Some(opc) => {
-                        self.fetched.prefix = self.fetched.prefix << 8;
-                        self.fetched.prefix |= opc as u16;
-                    }
-                    None => (),
-                }
-                self.fetched.op_code = Some(self.signals.data);
+                self.fetched.prefix = self.fetched.prefix << 8;
+                self.fetched.prefix |= self.fetched.op_code as u16;
+                self.fetched.op_code = self.signals.data;
             }
             3 => {}
             4 => {
@@ -828,4 +852,13 @@ impl CPU {
         self.scheduler.push(Operation::MrAddrR(pos + 1, 8)); // C
         true
     }
+}
+
+pub(crate) fn decode(op_code: u8) -> (u8, u8, u8, u8, u8) {
+    let x: u8 = (op_code & 0b11000000) >> 6;
+    let y = (op_code & 0b00111000) >> 3;
+    let z = (op_code & 0b00000111) >> 0;
+    let p = y >> 1;
+    let q: u8 = y & 0b00000001;
+    (x, y, z, p, q)
 }

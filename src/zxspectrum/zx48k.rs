@@ -351,9 +351,7 @@ impl Bus {
                     checksum ^= loaded_byte;
                 }
 
-                // if start_address == 0x4000 {
-                //     thread::sleep(Duration::from_secs(5));
-                // }
+                if start_address == 0x4000 {}
 
                 println!(
                     "{} == {} : {}",

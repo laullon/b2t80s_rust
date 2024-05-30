@@ -18,7 +18,7 @@ pub enum IndexMode {
     Iy,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Registers {
     pub a: u8,
     pub f: Flags,
@@ -166,9 +166,9 @@ impl Registers {
             },
             7 => self.a = v,
 
-            8 => self.pc = self.pc&0xff00 | v as u16, //c
-            9 => self.pc = self.pc&0x00ff | ((v as u16)<<8), //p
-            
+            8 => self.pc = self.pc & 0xff00 | v as u16, //c
+            9 => self.pc = self.pc & 0x00ff | ((v as u16) << 8), //p
+
             _ => panic!("get_r r:{}", r),
         }
     }
@@ -274,7 +274,7 @@ impl Registers {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Flags {
     pub c: bool,
     pub n: bool,

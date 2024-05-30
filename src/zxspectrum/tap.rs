@@ -1,6 +1,14 @@
+use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::mpsc::Sender;
+
+use rfd::FileDialog;
+
+use crate::z80::registers::Registers;
+
+use super::zx48k::MachineMessage;
 
 struct LoopBlock {
     id: u8,
@@ -12,6 +20,7 @@ struct LoopEndBlock {
     id: u8,
 }
 
+#[derive(Debug, Clone)]
 struct DataBlock {
     id: u8,
     flag: u8,
@@ -36,6 +45,7 @@ trait Block {}
 impl Block for DataBlock {}
 impl Block for PulseSeqBlock {}
 
+#[derive(Debug, Clone)]
 pub struct Tap {
     blocks: Vec<DataBlock>,
     actual_block: usize,
@@ -44,6 +54,28 @@ pub struct Tap {
 }
 
 impl Tap {
+    pub(crate) async fn load() -> Result<Tap, &'static str> {
+        let path: std::path::PathBuf = env::current_dir().unwrap();
+        let file = FileDialog::new()
+            .add_filter("tap", &["tap"])
+            .set_directory(path)
+            .pick_file();
+
+        match file {
+            Some(path) => match Tap::new(&path) {
+                Ok(tap) => {
+                    println!("Successfully loaded TAP file: {}", tap.name);
+                    Ok(tap)
+                }
+                Err(err) => {
+                    format!("Error loading TAP file: {}", err);
+                    Err("Error loading TAP file")
+                }
+            },
+            None => Err("No TAP file selected"),
+        }
+    }
+
     pub fn new(url: &Path) -> Result<Self, std::io::Error> {
         let mut file = File::open(url)?;
         let mut data = Vec::new();
@@ -101,7 +133,58 @@ impl Tap {
         }
     }
 
-    fn read_tzx_block(data: &[u8]) -> (Box<dyn Block>, usize) {
-        unimplemented!(); // Implement this method
+    // fn read_tzx_block(data: &[u8]) -> (Box<dyn Block>, usize) {
+    //     unimplemented!(); // Implement this method
+    // }
+
+    pub fn load_tap_block(&mut self, regs: Registers, machine_ctl_tx: Sender<MachineMessage>) {
+        let data = self
+            .next_block()
+            .map(|block| block.to_vec())
+            .unwrap_or_else(Vec::new);
+        if data.is_empty() {
+            return;
+        }
+
+        let requested_length = regs.de();
+        let start_address = regs.ix();
+        println!("Loading block to {:04x} ({})", start_address, data.len());
+
+        let a = data[0];
+        println!("{} == {} : {}", regs.a_alt, a, regs.a_alt == a);
+        println!("requestedLength: {}", requested_length);
+        if regs.a_alt == a {
+            if regs.f_alt.c {
+                let mut checksum = data[0];
+                for i in 0..(requested_length as usize) {
+                    let loaded_byte = data[i + 1];
+                    // self.mem_write(start_address.wrapping_add(i as u16), loaded_byte);
+                    checksum ^= loaded_byte;
+                }
+
+                if start_address == 0x4000 {}
+
+                println!(
+                    "{} == {} : {}",
+                    checksum,
+                    data[requested_length as usize + 1],
+                    checksum == data[requested_length as usize + 1]
+                );
+                // regs.f.c = true;
+            } else {
+                // regs.f.c = true;
+            }
+            println!("done");
+        } else {
+            // regs.f.c = false;
+            println!("BAD Block");
+        }
+
+        // regs.pc = 0x05e2;
+        machine_ctl_tx
+            .send(MachineMessage::CPUSetRegisters(regs))
+            .unwrap();
+        machine_ctl_tx.send(MachineMessage::CPUResume).unwrap();
+        println!("Done\n--------");
     }
 }

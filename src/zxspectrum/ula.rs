@@ -1,9 +1,10 @@
 use iced::keyboard::{key::Named, Event as KeyEvent, Key};
 
 use crate::signals::{SignalReq, Signals};
-use std::sync::{atomic::Ordering, mpsc::Receiver, Arc, Mutex};
+use iced::futures::channel::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
-use super::zx48k::UISignals;
+use super::zx48k::UICommands;
 
 pub const SRC_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT + 1;
 
@@ -34,7 +35,6 @@ pub struct ULA {
     frame: u8,
     col: usize,
     row: usize,
-    ts_per_row: usize,
     scanlines: usize,
     floating_bus: u8,
     ear: bool,
@@ -55,7 +55,7 @@ pub struct ULA {
     bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
     buffer: usize,
     event_rx: Receiver<KeyEvent>,
-    ui_signals: Arc<UISignals>,
+    ui_ctl_tx: Sender<UICommands>,
 }
 
 pub enum ULASignal {
@@ -66,7 +66,7 @@ impl ULA {
     pub fn new(
         bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
         event_rx: Receiver<KeyEvent>,
-        ui_signals: Arc<UISignals>,
+        ui_ctl_tx: Sender<UICommands>,
     ) -> Self {
         ULA {
             // listener: None,
@@ -76,7 +76,6 @@ impl ULA {
             frame: 0,
             col: 0,
             row: 0,
-            ts_per_row: WIDTH / 2,
             scanlines: HEIGHT,
             floating_bus: 0,
             ear: false,
@@ -97,7 +96,7 @@ impl ULA {
             data: vec![0; 8],
             buffer: 0,
             event_rx,
-            ui_signals,
+            ui_ctl_tx,
         }
     }
 
@@ -219,9 +218,11 @@ impl ULA {
             self.signals.interrupt = false;
         }
 
-        match self.event_rx.try_recv() {
-            Ok(event) => self.on_key(event),
-            Err(_) => (),
+        match self.event_rx.try_next() {
+            Ok(Some(e)) => self.on_key(e),
+            _ => (),
+            // Ok(Some(event)) => self.on_key(event),
+            // Err(_) => (),
         }
     }
 
@@ -243,18 +244,10 @@ impl ULA {
     }
 
     fn frame_done(&mut self) {
-        self.ui_signals
-            .active_buffer
-            .store(self.buffer, Ordering::SeqCst);
-        self.ui_signals.frame_done.store(true, Ordering::SeqCst);
+        self.ui_ctl_tx
+            .start_send(UICommands::DrawBuffer(self.buffer))
+            .unwrap();
         self.buffer = 1 - self.buffer;
-
-        // let start = Instant::now();
-        // println!("    frame_done: {:?}", start.elapsed());
-
-        // let keys = self.window.get_keys();
-        // self.keyboard_row = [0; 8];
-        // self.on_key(keys);
     }
 
     pub fn read_port(&self, port: u16) -> u8 {

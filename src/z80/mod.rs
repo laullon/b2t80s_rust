@@ -1,7 +1,7 @@
 pub mod cpu;
 mod diss;
 mod ops_codes;
-mod registers;
+pub mod registers;
 
 #[cfg(test)]
 mod tests;

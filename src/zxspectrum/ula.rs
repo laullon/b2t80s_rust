@@ -2,7 +2,7 @@ use iced::keyboard::{key::Named, Event as KeyEvent, Key};
 
 use crate::signals::{SignalReq, Signals};
 use iced::futures::channel::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 
 use super::zx48k::UICommands;
 
@@ -23,24 +23,17 @@ const PALETTE: [u32; 16] = [
     0x000000ff, 0x3040ffff, 0xff4030ff, 0xff70f0ff, 0x50e010ff, 0x50e0ffff, 0xffe850ff, 0xffffffff,
 ];
 
-// trait ULAListener {
-//     fn frame_done(&mut self, bitmap: &Bitmap);
-// }
-
 pub struct ULA {
-    // listener: Option<Box<dyn ULAListener>>,
-    // cpu: Z80,
     keyboard_row: [u8; 8],
     border_colour: u32,
     frame: u8,
     col: usize,
     row: usize,
-    scanlines: usize,
     floating_bus: u8,
     ear: bool,
     ear_active: bool,
-    buzzer: bool,
-    // sound: SoundEngine,
+    buzzer: u8,
+    sound: mpsc::Sender<f32>,
     sound_frame: u8,
     screen_data: u8,
     attr_data: u8,
@@ -67,6 +60,7 @@ impl ULA {
         bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
         event_rx: Receiver<KeyEvent>,
         ui_ctl_tx: Sender<UICommands>,
+        sound_tx: mpsc::Sender<f32>,
     ) -> Self {
         ULA {
             // listener: None,
@@ -76,12 +70,11 @@ impl ULA {
             frame: 0,
             col: 0,
             row: 0,
-            scanlines: HEIGHT,
             floating_bus: 0,
             ear: false,
             ear_active: false,
-            buzzer: false,
-            // sound: SoundEngine::new(),
+            buzzer: 0,
+            sound: sound_tx,
             sound_frame: 0,
             screen_data: 0,
             attr_data: 0,
@@ -118,9 +111,13 @@ impl ULA {
 
     pub fn tick(&mut self) {
         self.sound_frame += 1;
-        if self.sound_frame == 50 {
+        if self.sound_frame == 200 {
             self.sound_frame = 0;
-            // self.sound.tick(self.buzzer);
+            let t = -0.05 + ((self.buzzer as f32) * 0.1);
+            match self.sound.send(t) {
+                Ok(_) => (),
+                Err(e) => println!("send error: {}", e),
+            }
         }
 
         let in_screen = (0..256).contains(&self.col) && (0..192).contains(&self.row);
@@ -276,7 +273,7 @@ impl ULA {
     pub fn write_port(&mut self, port: u16, data: u8) {
         if port & 0xff == 0xfe {
             self.border_colour = PALETTE[data as usize & 0x07];
-            self.buzzer = (data & 16) >> 4 != 0;
+            self.buzzer = (data & 16) >> 4;
             self.ear_active = (data & 24) != 0;
         }
     }

@@ -2,7 +2,7 @@ use iced::futures::channel::mpsc::{Receiver, Sender};
 use rfd::FileDialog;
 use tokio::task;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use std::{env, fs::File, io::Read};
 
@@ -57,11 +57,12 @@ impl Zx48k {
         machine_ctl_rx: Receiver<MachineMessage>,
         machine_ctl_tx: Sender<MachineMessage>,
         ui_ctl_tx: Sender<UICommands>,
+        sound_tx: mpsc::Sender<f32>,
     ) -> Self {
         Self {
             memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
-            ula: ULA::new(bitmaps, event_rx, ui_ctl_tx.clone()),
+            ula: ULA::new(bitmaps, event_rx, ui_ctl_tx.clone(), sound_tx),
             machine_ctl_rx,
             machine_ctl_tx,
             tap: None,

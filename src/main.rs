@@ -2,11 +2,14 @@ use b2t80s_rust::zxspectrum::{
     ula::{SCREEN_HEIGHT, SCREEN_WIDTH, SRC_SIZE},
     zx48k::{MachineMessage, UICommands, Zx48k},
 };
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    BufferSize, FromSample, Sample, Stream, StreamConfig,
+};
 use iced::{
     event,
     futures::{
         channel::mpsc::{self, channel, Sender},
-        stream::Map,
         SinkExt, StreamExt,
     },
     keyboard::Event as KeyEvent,
@@ -56,6 +59,7 @@ struct UI {
     machine_ctl_tx: Option<Sender<MachineMessage>>,
     event_tx: Option<Sender<KeyEvent>>,
     fps: FPSCounter,
+    stream: Option<Stream>,
 }
 
 struct FPSCounter {
@@ -100,6 +104,7 @@ impl Default for UI {
             machine_ctl_tx: None,
             event_tx: None,
             fps: FPSCounter::new(),
+            stream: None,
         }
     }
 }
@@ -112,12 +117,22 @@ impl UI {
                 let (event_tx, event_rx) = channel::<KeyEvent>(10);
                 let (machine_ctl_tx, machine_ctl_rx) = channel::<MachineMessage>(0);
 
+                let (stream, sound_tx) = match SoundEngine::init_engine() {
+                    Ok((stream, sound_tx)) => match stream.play() {
+                        Ok(_) => (stream, sound_tx),
+                        Err(e) => panic!("Failed to init sound: {}", e),
+                    },
+                    Err(e) => panic!("Failed to init sound: {}", e),
+                };
+                self.stream = Some(stream);
+
                 let mut zx = Zx48k::new(
                     [self.bitmaps[0].clone(), self.bitmaps[1].clone()],
                     event_rx,
                     machine_ctl_rx,
                     machine_ctl_tx.clone(),
                     sender.clone(),
+                    sound_tx,
                 );
 
                 self.machine_ctl_tx = Some(machine_ctl_tx.clone());
@@ -220,5 +235,59 @@ fn action<'a, Message: Clone + 'a>(
         .into()
     } else {
         action.style(button::secondary).into()
+    }
+}
+
+struct SoundEngine {}
+
+impl SoundEngine {
+    fn init_engine() -> anyhow::Result<(Stream, std::sync::mpsc::Sender<f32>)> {
+        let host: cpal::Host = cpal::default_host();
+        let device: cpal::Device = host
+            .default_output_device()
+            .expect("failed to find output device");
+        println!("Output device: {}", device.name()?);
+
+        let config = device.default_output_config().unwrap();
+        println!("Default output config: {:?}", config);
+        println!("Default sample_format {:?}", config.sample_format());
+
+        let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+
+        let channels = config.channels() as usize;
+
+        let (tx, rx) = std::sync::mpsc::channel::<f32>();
+        let mut next_value = move || {
+            let recv = rx.recv();
+            recv.ok().unwrap()
+        };
+
+        let mut config: StreamConfig = StreamConfig::from(config);
+        config.sample_rate = cpal::SampleRate(35000);
+        config.buffer_size = BufferSize::Fixed(1024);
+        println!("config: {:?}", config);
+
+        let stream = device.build_output_stream(
+            &config.into(),
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                Self::write_data(data, channels, &mut next_value)
+            },
+            err_fn,
+            None,
+        )?;
+        Ok((stream, tx))
+    }
+
+    fn write_data<T>(output: &mut [T], channels: usize, next_sample: &mut dyn FnMut() -> f32)
+    where
+        T: Sample + FromSample<f32>,
+    {
+        for frame in output.chunks_mut(channels) {
+            let value = next_sample();
+            let value: T = T::from_sample(value);
+            for sample in frame.iter_mut() {
+                *sample = value;
+            }
+        }
     }
 }

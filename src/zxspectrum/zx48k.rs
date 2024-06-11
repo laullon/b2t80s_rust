@@ -204,7 +204,7 @@ impl Zx48k {
             }
         };
         if data.is_empty() {
-            return; //emulator::CONTINUE
+            return;
         }
 
         let requested_length = self.cpu.regs.de();
@@ -213,13 +213,6 @@ impl Zx48k {
 
         self.cpu.wait = true;
         let a = data[0];
-        println!(
-            "{} == {} : {}",
-            self.cpu.regs.a_alt,
-            a,
-            self.cpu.regs.a_alt == a
-        );
-        println!("requestedLength: {}", requested_length);
         if self.cpu.regs.a_alt == a {
             if self.cpu.regs.f_alt.c {
                 let mut checksum = data[0];
@@ -249,9 +242,6 @@ impl Zx48k {
 
         self.cpu.regs.pc = 0x05e2;
         self.cpu.wait = false;
-        println!("Done\n--------");
-
-        return;
     }
 }
 

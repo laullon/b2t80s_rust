@@ -4,7 +4,7 @@ use b2t80s_rust::zxspectrum::{
 };
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    BufferSize, FromSample, Sample, Stream, StreamConfig,
+    FromSample, Sample, Stream, StreamConfig,
 };
 use iced::{
     event,
@@ -14,7 +14,7 @@ use iced::{
     },
     keyboard::Event as KeyEvent,
     subscription,
-    widget::{button, column, container, image, row, text, tooltip, Image},
+    widget::{button, column, container, image, row, slider, text, tooltip, Image},
     Alignment, Command, ContentFit, Element, Event, Length, Subscription,
 };
 use std::{
@@ -46,6 +46,7 @@ enum Message {
     Ready(Sender<UICommands>),
     SetBuffer(usize),
     KeyEvent(KeyEvent),
+    SetVolume(f32),
 }
 
 enum State {
@@ -60,6 +61,7 @@ struct UI {
     event_tx: Option<Sender<KeyEvent>>,
     fps: FPSCounter,
     stream: Option<Stream>,
+    volume: Arc<Mutex<f32>>,
 }
 
 struct FPSCounter {
@@ -105,19 +107,19 @@ impl Default for UI {
             event_tx: None,
             fps: FPSCounter::new(),
             stream: None,
+            volume: Arc::new(Mutex::new(0.5)),
         }
     }
 }
 
 impl UI {
     pub fn update(&mut self, msg: Message) -> Command<Message> {
-        self.fps.tick();
         match (msg, self.event_tx.as_mut()) {
             (Message::Ready(sender), _) => {
                 let (event_tx, event_rx) = channel::<KeyEvent>(10);
                 let (machine_ctl_tx, machine_ctl_rx) = channel::<MachineMessage>(0);
 
-                let (stream, sound_tx) = match SoundEngine::init_engine() {
+                let (stream, sound_tx) = match SoundEngine::init_engine(self.volume.clone()) {
                     Ok((stream, sound_tx)) => match stream.play() {
                         Ok(_) => (stream, sound_tx),
                         Err(e) => panic!("Failed to init sound: {}", e),
@@ -144,6 +146,11 @@ impl UI {
             }
             (Message::SetBuffer(b), _) => {
                 self.buffer = b;
+                self.fps.tick();
+            }
+            (Message::SetVolume(b), _) => {
+                *self.volume.lock().unwrap() = b;
+                println!("SetVolume: {}", b);
             }
             (Message::KeyEvent(e), Some(tx)) => tx.start_send(e).unwrap(),
             _ => (),
@@ -165,9 +172,16 @@ impl UI {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let controls = row![action(text("Reset"), "Reset", None),]
-            .spacing(10)
-            .align_items(Alignment::Center);
+        let controls = row![
+            action(text("Reset"), "Reset", None),
+            text("Volume"),
+            slider::Slider::new(0.0..=1.0, *self.volume.lock().unwrap(), Message::SetVolume)
+                .step(0.1)
+                .width(Length::Fixed(100.0)),
+        ]
+        .spacing(10)
+        .padding(10)
+        .align_items(Alignment::Center);
 
         let content = column![controls, screen, text(format!("FPS: {:.2}", self.fps.fps))]
             .height(Length::Fill);
@@ -241,30 +255,31 @@ fn action<'a, Message: Clone + 'a>(
 struct SoundEngine {}
 
 impl SoundEngine {
-    fn init_engine() -> anyhow::Result<(Stream, std::sync::mpsc::Sender<f32>)> {
+    fn init_engine(
+        volume: Arc<Mutex<f32>>,
+    ) -> anyhow::Result<(Stream, std::sync::mpsc::Sender<f32>)> {
         let host: cpal::Host = cpal::default_host();
         let device: cpal::Device = host
             .default_output_device()
             .expect("failed to find output device");
         println!("Output device: {}", device.name()?);
 
-        let config = device.default_output_config().unwrap();
-        println!("Default output config: {:?}", config);
-        println!("Default sample_format {:?}", config.sample_format());
+        let def_config = device.default_output_config().unwrap();
+        println!("Default output config: {:?}", def_config);
+        println!("Default sample_format {:?}", def_config.sample_format());
 
         let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
 
-        let channels = config.channels() as usize;
+        let channels = def_config.channels() as usize;
 
         let (tx, rx) = std::sync::mpsc::channel::<f32>();
         let mut next_value = move || {
             let recv = rx.recv();
-            recv.ok().unwrap()
+            recv.ok().unwrap() * *volume.lock().unwrap()
         };
 
-        let mut config: StreamConfig = StreamConfig::from(config);
+        let mut config: StreamConfig = StreamConfig::from(def_config);
         config.sample_rate = cpal::SampleRate(35000);
-        config.buffer_size = BufferSize::Fixed(1024);
         println!("config: {:?}", config);
 
         let stream = device.build_output_stream(

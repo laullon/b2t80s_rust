@@ -13,9 +13,9 @@ use iced::{
         SinkExt, StreamExt,
     },
     keyboard::Event as KeyEvent,
-    subscription,
+    stream,
     widget::{button, column, container, image, row, slider, text, tooltip, Image},
-    Alignment, Command, ContentFit, Element, Event, Length, Subscription,
+    Alignment, ContentFit, Element, Event, Length, Subscription,
 };
 use std::{
     panic, process,
@@ -33,7 +33,8 @@ fn main() -> iced::Result {
         process::exit(1);
     }));
 
-    iced::program("ZX Spectrum 48K", UI::update, UI::view)
+    iced::application(UI::default, UI::update, UI::view)
+        .title("ZX Spectrum 48K")
         .subscription(UI::subscription)
         .run()
 }
@@ -47,6 +48,7 @@ enum Message {
     SetBuffer(usize),
     KeyEvent(KeyEvent),
     SetVolume(f32),
+    Reset,
 }
 
 enum State {
@@ -62,6 +64,7 @@ struct UI {
     fps: FPSCounter,
     stream: Option<Stream>,
     volume: Arc<Mutex<f32>>,
+    error: Option<String>,
 }
 
 struct FPSCounter {
@@ -108,35 +111,53 @@ impl Default for UI {
             fps: FPSCounter::new(),
             stream: None,
             volume: Arc::new(Mutex::new(0.5)),
+            error: None,
         }
     }
 }
 
 impl UI {
-    pub fn update(&mut self, msg: Message) -> Command<Message> {
+    pub fn update(&mut self, msg: Message) {
         match (msg, self.event_tx.as_mut()) {
             (Message::Ready(sender), _) => {
                 let (event_tx, event_rx) = channel::<KeyEvent>(10);
                 let (machine_ctl_tx, machine_ctl_rx) = channel::<MachineMessage>(0);
 
-                let (stream, sound_tx) = match SoundEngine::init_engine(self.volume.clone()) {
+                let sound_tx = match SoundEngine::init_engine(self.volume.clone()) {
                     Ok((stream, sound_tx)) => match stream.play() {
-                        Ok(_) => (stream, sound_tx),
-                        Err(e) => panic!("Failed to init sound: {}", e),
+                        Ok(()) => {
+                            self.stream = Some(stream);
+                            sound_tx
+                        }
+                        Err(error) => {
+                            eprintln!("Audio disabled: {error}");
+                            SoundEngine::silent_sender()
+                        }
                     },
-                    Err(e) => panic!("Failed to init sound: {}", e),
+                    Err(error) => {
+                        eprintln!("Audio disabled: {error:#}");
+                        SoundEngine::silent_sender()
+                    }
                 };
-                self.stream = Some(stream);
 
-                let mut zx = Zx48k::new(
+                let mut zx = match Zx48k::new(
                     [self.bitmaps[0].clone(), self.bitmaps[1].clone()],
                     event_rx,
                     machine_ctl_rx,
                     machine_ctl_tx.clone(),
                     sender.clone(),
                     sound_tx,
-                );
+                ) {
+                    Ok(zx) => zx,
+                    Err(error) => {
+                        let message = format!("Unable to start emulator: {error:#}");
+                        eprintln!("{message}");
+                        self.error = Some(message);
+                        return;
+                    }
+                };
 
+                self.error = None;
                 self.machine_ctl_tx = Some(machine_ctl_tx.clone());
                 self.event_tx = Some(event_tx.clone());
 
@@ -152,18 +173,23 @@ impl UI {
                 *self.volume.lock().unwrap() = b;
                 println!("SetVolume: {}", b);
             }
-            (Message::KeyEvent(e), Some(tx)) => tx.start_send(e).unwrap(),
+            (Message::Reset, _) => {
+                if let Some(tx) = self.machine_ctl_tx.as_mut() {
+                    let _ = tx.start_send(MachineMessage::Reset);
+                }
+            }
+            (Message::KeyEvent(e), Some(tx)) => {
+                let _ = tx.start_send(e);
+            }
             _ => (),
         }
-
-        Command::none()
     }
 
     pub fn view(&self) -> Element<'_, Message> {
         let screen = image::Handle::from_rgba(
             SCREEN_WIDTH as u32,
             SCREEN_HEIGHT as u32,
-            self.bitmaps[0].lock().unwrap().clone(),
+            self.bitmaps[self.buffer].lock().unwrap().clone(),
         );
 
         let screen = Image::<image::Handle>::new(screen)
@@ -173,7 +199,7 @@ impl UI {
             .height(Length::Fill);
 
         let controls = row![
-            action(text("Reset"), "Reset", None),
+            action(text("Reset"), "Reset", Some(Message::Reset)),
             text("Volume"),
             slider::Slider::new(0.0..=1.0, *self.volume.lock().unwrap(), Message::SetVolume)
                 .step(0.1)
@@ -181,10 +207,15 @@ impl UI {
         ]
         .spacing(10)
         .padding(10)
-        .align_items(Alignment::Center);
+        .align_y(Alignment::Center);
 
-        let content = column![controls, screen, text(format!("FPS: {:.2}", self.fps.fps))]
-            .height(Length::Fill);
+        let content = column![
+            controls,
+            screen,
+            text(format!("FPS: {:.2}", self.fps.fps)),
+            text(self.error.as_deref().unwrap_or_default()),
+        ]
+        .height(Length::Fill);
 
         container(content)
             .width(Length::Fill)
@@ -195,7 +226,7 @@ impl UI {
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch(vec![
             self.some_worker(),
-            event::listen_with(|event, _| match event {
+            event::listen_with(|event, _, _| match event {
                 Event::Keyboard(e) => Some(e),
                 _ => None,
             })
@@ -204,33 +235,32 @@ impl UI {
     }
 
     fn some_worker(&self) -> Subscription<Message> {
-        struct SomeWorker;
-        subscription::channel(
-            std::any::TypeId::of::<SomeWorker>(),
-            100,
-            |mut output| async move {
-                let mut state = State::Starting;
-                loop {
-                    match &mut state {
-                        State::Starting => {
-                            let (sender, receiver) = mpsc::channel(100);
-                            let _ = output.send(Message::Ready(sender)).await;
-                            state = State::Ready(receiver);
+        Subscription::run(worker_stream)
+    }
+}
+
+fn worker_stream() -> impl iced::futures::Stream<Item = Message> {
+    stream::channel(100, async move |mut output: Sender<Message>| {
+        let mut state = State::Starting;
+        loop {
+            match &mut state {
+                State::Starting => {
+                    let (sender, receiver) = mpsc::channel(100);
+                    let _ = output.send(Message::Ready(sender)).await;
+                    state = State::Ready(receiver);
+                }
+                State::Ready(receiver) => {
+                    let input = receiver.next().await;
+                    match input {
+                        Some(UICommands::DrawBuffer(b)) => {
+                            let _ = output.send(Message::SetBuffer(b)).await;
                         }
-                        State::Ready(receiver) => {
-                            let input = receiver.next().await;
-                            match input {
-                                Some(UICommands::DrawBuffer(b)) => {
-                                    let _ = output.send(Message::SetBuffer(b)).await;
-                                }
-                                None => unreachable!(),
-                            }
-                        }
+                        None => unreachable!(),
                     }
                 }
-            },
-        )
-    }
+            }
+        }
+    })
 }
 
 fn action<'a, Message: Clone + 'a>(
@@ -261,29 +291,49 @@ impl SoundEngine {
         let host: cpal::Host = cpal::default_host();
         let device: cpal::Device = host
             .default_output_device()
-            .expect("failed to find output device");
-        println!("Output device: {}", device.name()?);
+            .ok_or_else(|| anyhow::anyhow!("no output device is available"))?;
+        println!("Output device: {}", device.description()?.name());
 
-        let def_config = device.default_output_config().unwrap();
+        let def_config = device.default_output_config()?;
         println!("Default output config: {:?}", def_config);
         println!("Default sample_format {:?}", def_config.sample_format());
 
         let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
 
         let channels = def_config.channels() as usize;
+        let output_sample_rate = def_config.sample_rate() as f64;
 
         let (tx, rx) = std::sync::mpsc::channel::<f32>();
+        let source_step = 35_000.0 / output_sample_rate;
+        let mut source_phase = 1.0;
+        let mut current_sample = 0.0;
         let mut next_value = move || {
-            let recv = rx.recv();
-            recv.ok().unwrap() * *volume.lock().unwrap()
+            source_phase += source_step;
+            while source_phase >= 1.0 {
+                match rx.try_recv() {
+                    Ok(sample) => {
+                        current_sample = sample;
+                        source_phase -= 1.0;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        source_phase = 1.0;
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        current_sample = 0.0;
+                        source_phase = 0.0;
+                        break;
+                    }
+                }
+            }
+            current_sample * *volume.lock().unwrap()
         };
 
-        let mut config: StreamConfig = StreamConfig::from(def_config);
-        config.sample_rate = cpal::SampleRate(35000);
+        let config: StreamConfig = StreamConfig::from(def_config);
         println!("config: {:?}", config);
 
         let stream = device.build_output_stream(
-            &config.into(),
+            config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 Self::write_data(data, channels, &mut next_value)
             },
@@ -291,6 +341,12 @@ impl SoundEngine {
             None,
         )?;
         Ok((stream, tx))
+    }
+
+    fn silent_sender() -> std::sync::mpsc::Sender<f32> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || while rx.recv().is_ok() {});
+        tx
     }
 
     fn write_data<T>(output: &mut [T], channels: usize, next_sample: &mut dyn FnMut() -> f32)

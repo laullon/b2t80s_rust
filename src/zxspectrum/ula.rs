@@ -215,8 +215,8 @@ impl ULA {
             self.signals.interrupt = false;
         }
 
-        match self.event_rx.try_next() {
-            Ok(Some(e)) => self.on_key(e),
+        match self.event_rx.try_recv() {
+            Ok(e) => self.on_key(e),
             _ => (),
             // Ok(Some(event)) => self.on_key(event),
             // Err(_) => (),

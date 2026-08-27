@@ -4,7 +4,7 @@ use tokio::task;
 
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
-use std::{env, fs::File, io::Read};
+use std::{env, fs::File, io::Read, path::PathBuf};
 
 use crate::signals::SignalReq;
 use crate::z80::cpu::CPU;
@@ -58,16 +58,16 @@ impl Zx48k {
         machine_ctl_tx: Sender<MachineMessage>,
         ui_ctl_tx: Sender<UICommands>,
         sound_tx: mpsc::Sender<f32>,
-    ) -> Self {
-        Self {
-            memory: [load_rom(), [0; 0x4000], [0; 0x4000], [0; 0x4000]],
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            memory: [load_rom()?, [0; 0x4000], [0; 0x4000], [0; 0x4000]],
             cpu: CPU::new(),
             ula: ULA::new(bitmaps, event_rx, ui_ctl_tx.clone(), sound_tx),
             machine_ctl_rx,
             machine_ctl_tx,
             tap: None,
             tap_state: TapState::Empty,
-        }
+        })
     }
 
     pub async fn run(self: &mut Self) -> ! {
@@ -104,18 +104,22 @@ impl Zx48k {
                 }
             }
 
-            match self.machine_ctl_rx.try_next() {
+            match self.machine_ctl_rx.try_recv() {
                 Ok(msg) => match msg {
-                    Some(MachineMessage::CPUWait) => self.cpu.wait = true,
-                    Some(MachineMessage::CPUResume) => self.cpu.wait = false,
-                    Some(MachineMessage::Reset) => self.reset(),
-                    Some(MachineMessage::CPUSetRegisters(_)) => todo!(),
-                    Some(MachineMessage::TapLoad(file)) => {
-                        self.tap = Some(Tap::new(&file).unwrap());
-                        self.tap_state = TapState::Ready;
-                    }
-                    None => (),
-                    // _ => unreachable!("Invalid machine message"),
+                    MachineMessage::CPUWait => self.cpu.wait = true,
+                    MachineMessage::CPUResume => self.cpu.wait = false,
+                    MachineMessage::Reset => self.reset(),
+                    MachineMessage::CPUSetRegisters(_) => todo!(),
+                    MachineMessage::TapLoad(file) => match Tap::new(&file) {
+                        Ok(tap) => {
+                            self.tap = Some(tap);
+                            self.tap_state = TapState::Ready;
+                        }
+                        Err(error) => {
+                            eprintln!("Unable to load {}: {error:#}", file.display());
+                            self.reset();
+                        }
+                    },
                 },
                 Err(_) => {}
             }
@@ -215,6 +219,18 @@ impl Zx48k {
         let a = data[0];
         if self.cpu.regs.a_alt == a {
             if self.cpu.regs.f_alt.c {
+                let required_length = requested_length as usize + 2;
+                if data.len() < required_length {
+                    eprintln!(
+                        "Tape block is too short: requested {requested_length} bytes, block contains {}",
+                        data.len().saturating_sub(2)
+                    );
+                    self.cpu.regs.f.c = false;
+                    self.cpu.regs.pc = 0x05e2;
+                    self.cpu.wait = false;
+                    return;
+                }
+
                 let mut checksum = data[0];
                 for i in 0..(requested_length as usize) {
                     let loaded_byte = data[i + 1];
@@ -222,15 +238,9 @@ impl Zx48k {
                     checksum ^= loaded_byte;
                 }
 
-                if start_address == 0x4000 {}
-
-                println!(
-                    "{} == {} : {}",
-                    checksum,
-                    data[requested_length as usize + 1],
-                    checksum == data[requested_length as usize + 1]
-                );
-                self.cpu.regs.f.c = true;
+                let expected_checksum = data[requested_length as usize + 1];
+                self.cpu.regs.f.c = checksum == expected_checksum;
+                println!("{checksum} == {expected_checksum} : {}", self.cpu.regs.f.c);
             } else {
                 self.cpu.regs.f.c = true;
             }
@@ -261,14 +271,26 @@ fn load_tap_file(mut machine_ctl_tx: Sender<MachineMessage>) {
     });
 }
 
-fn load_rom() -> [u8; 0x4000] {
-    let mut path = env::current_dir().unwrap().join("bin");
-    // path = path.join("DiagROMv.171.rom");
-    path = path.join("48.rom");
+fn load_rom() -> anyhow::Result<[u8; 0x4000]> {
+    let mut candidates = Vec::new();
+    if let Some(path) = env::var_os("B2T80S_ROM") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(path) = env::current_dir() {
+        candidates.push(path.join("bin/48.rom"));
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin/48.rom"));
 
-    let mut f = File::open(&path).expect("Failed to open ROM file");
+    let path = candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!("ZX Spectrum ROM not found; set B2T80S_ROM or place 48.rom in bin/")
+        })?;
+
+    let mut f = File::open(&path)?;
     let mut rom = [0; 0x4000];
-    f.read_exact(&mut rom).expect("Failed to read ROM file");
+    f.read_exact(&mut rom)?;
 
-    rom
+    Ok(rom)
 }

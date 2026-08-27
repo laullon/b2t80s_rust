@@ -40,7 +40,7 @@ pub fn ld_rr_mm(cpu: &mut CPU, r: u8) {
 
 pub fn halt(cpu: &mut CPU) {
     cpu.halt = true;
-    cpu.regs.pc -= 1
+    cpu.regs.pc = cpu.regs.pc.wrapping_sub(1);
 }
 
 pub fn ld_r_n(cpu: &mut CPU, y: u8) {

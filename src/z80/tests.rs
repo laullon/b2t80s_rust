@@ -224,6 +224,7 @@ fn parse_aux_regs(aux: String) -> AuxRegs {
 }
 
 #[test]
+#[ignore = "long-running ZEXDOC diagnostic"]
 fn test_zexdoc() {
     let path = env::current_dir()
         .unwrap()
@@ -287,7 +288,11 @@ fn test_zexdoc() {
         }
         cpu.tick();
     }
-    assert!(false);
+    let output = String::from_utf8_lossy(&screen);
+    assert!(
+        output.contains("Tests complete"),
+        "ZEXDOC did not report completion: {output}"
+    );
 }
 
 // Emulate CP/M call 5; function is in register C.

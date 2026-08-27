@@ -92,7 +92,7 @@ impl CPU {
         if self.halt {
             if self.signals.interrupt {
                 self.halt = false;
-                self.regs.pc += 1;
+                self.regs.pc = self.regs.pc.wrapping_add(1);
             } else {
                 return None;
             }
@@ -750,7 +750,7 @@ impl CPU {
             3 => {
                 self.fetched.d = Some(self.signals.data);
                 self.signals.mem = SignalReq::None;
-                self.regs.pc += 1;
+                self.regs.pc = self.regs.pc.wrapping_add(1);
                 return true;
             }
             _ => panic!(),

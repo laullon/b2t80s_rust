@@ -11,6 +11,9 @@ pub const SRC_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT + 1;
 const WIDTH: usize = 448;
 const HEIGHT: usize = 312;
 
+pub const TSTATES_PER_LINE: usize = WIDTH / 2;
+pub const TSTATES_PER_FRAME: usize = TSTATES_PER_LINE * HEIGHT;
+
 pub const SCREEN_WIDTH: usize = 256 + (SCREEN_BORDER * 2);
 pub const SCREEN_HEIGHT: usize = 192 + (SCREEN_BORDER * 2);
 const SCREEN_BORDER: usize = 48;
@@ -107,6 +110,14 @@ impl ULA {
         addr |= (self.row & 0b00111000) << 2;
         addr |= (self.col & 0b11111000) >> 3;
         addr.try_into().unwrap()
+    }
+
+    /// Current 48K frame T-state, with zero at the beginning of the ULA
+    /// interrupt pulse. The display begins 64 lines after that point.
+    pub fn frame_tstate(&self) -> usize {
+        const TSTATES_FROM_INTERRUPT_TO_DISPLAY: usize = 64 * TSTATES_PER_LINE;
+
+        (self.ts / 2 + TSTATES_FROM_INTERRUPT_TO_DISPLAY) % TSTATES_PER_FRAME
     }
 
     pub fn tick(&mut self) {

@@ -224,6 +224,29 @@ fn parse_aux_regs(aux: String) -> AuxRegs {
 }
 
 #[test]
+fn im1_interrupt_response_takes_thirteen_tstates() {
+    let mut cpu = CPU::new();
+    cpu.current_ops = None;
+    cpu.regs.pc = 0x1234;
+    cpu.regs.sp = 0x8000;
+    cpu.regs.iff1 = true;
+    cpu.regs.im = 1;
+    cpu.signals.interrupt = true;
+
+    let mut completed_at = None;
+    for tstate in 1..=13 {
+        if cpu.tick().is_some() {
+            completed_at = Some(tstate);
+        }
+    }
+
+    assert_eq!(completed_at, Some(13));
+    assert_eq!(cpu.regs.pc, 0x0038);
+    assert_eq!(cpu.regs.sp, 0x7ffe);
+    assert!(!cpu.regs.iff1);
+}
+
+#[test]
 #[ignore = "long-running ZEXDOC diagnostic"]
 fn test_zexdoc() {
     let path = env::current_dir()

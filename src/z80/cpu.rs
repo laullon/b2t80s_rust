@@ -832,7 +832,9 @@ impl CPU {
     fn int01(&mut self) -> bool {
         self.regs.iff1 = false;
         self.regs.sp = self.regs.sp.wrapping_sub(2);
-        self.scheduler.push(Operation::Delay(1));
+        // IM 0/1 interrupt response is 13 T-states: the acknowledge cycle
+        // (7 T-states including this operation) followed by the 6-state push.
+        self.scheduler.push(Operation::Delay(6));
         self.scheduler
             .push(Operation::Mw16(self.regs.sp, self.regs.pc));
         self.regs.pc = 0x0038;
@@ -842,7 +844,7 @@ impl CPU {
     fn int02(&mut self) -> bool {
         self.regs.iff1 = false;
         self.regs.sp = self.regs.sp.wrapping_sub(2);
-        self.scheduler.push(Operation::Delay(1));
+        self.scheduler.push(Operation::Delay(6));
         self.scheduler
             .push(Operation::Mw16(self.regs.sp, self.regs.pc));
 

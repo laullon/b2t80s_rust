@@ -7,11 +7,19 @@ use std::time::Duration;
 use std::{env, fs::File, io::Read, path::PathBuf};
 
 use crate::signals::SignalReq;
-use crate::z80::cpu::CPU;
+use crate::z80::cpu::{Operation, CPU};
 use crate::z80::registers::Registers;
 
 use super::tap::Tap;
-use super::ula::ULA;
+use super::ula::{TSTATES_PER_FRAME, TSTATES_PER_LINE, ULA};
+
+const CPU_CLOCK_HZ: u64 = 3_500_000;
+const FRAME_DURATION: Duration =
+    Duration::from_nanos((TSTATES_PER_FRAME as u64 * 1_000_000_000) / CPU_CLOCK_HZ);
+const FIRST_CONTENDED_TSTATE: usize = 14_335;
+const CONTENDED_LINES: usize = 192;
+const CONTENDED_TSTATES_PER_LINE: usize = 128;
+const CONTENTION_PATTERN: [u8; 8] = [6, 5, 4, 3, 2, 1, 0, 0];
 
 use iced::keyboard::Event as KeyEvent;
 
@@ -40,6 +48,9 @@ pub struct Zx48k {
     tap: Option<Tap>,
     tap_state: TapState,
 
+    contention_remaining: u8,
+    io_cycle_precontended: bool,
+
     machine_ctl_rx: Receiver<MachineMessage>,
     machine_ctl_tx: Sender<MachineMessage>,
 }
@@ -67,41 +78,18 @@ impl Zx48k {
             machine_ctl_tx,
             tap: None,
             tap_state: TapState::Empty,
+            contention_remaining: 0,
+            io_cycle_precontended: false,
         })
     }
 
     pub async fn run(self: &mut Self) -> ! {
         println!("Zx48k::run()");
-        let mut interval = tokio::time::interval(Duration::from_millis(20));
+        let mut interval = tokio::time::interval(FRAME_DURATION);
         loop {
             interval.tick().await;
-            // let t = std::time::Instant::now();
-            for _ in 0..(3_500_000 / 50) {
-                self.ula.tick();
-                self.bus_tick();
-                self.ula.tick();
-                self.bus_tick();
-                if !(self.ula.content && (self.cpu.signals.addr & 0xc000 == 0x4000)) {
-                    let trap = self.cpu.tick();
-                    self.bus_tick();
-
-                    match trap {
-                        Some(0x056B) => {
-                            // println!("Trap 0x056B - load tap block - {:?}", self.tap_state);
-                            self.ula.clean_keyboard();
-
-                            match self.tap_state {
-                                TapState::Empty => {
-                                    self.tap_state = TapState::Loading;
-                                    load_tap_file(self.machine_ctl_tx.clone());
-                                }
-                                TapState::Loading => (),
-                                TapState::Ready => self.load_tap_block(),
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+            for _ in 0..TSTATES_PER_FRAME {
+                self.tick_tstate();
             }
 
             match self.machine_ctl_rx.try_recv() {
@@ -124,6 +112,53 @@ impl Zx48k {
                 Err(_) => {}
             }
             // println!("t: {}ms", t.elapsed().as_millis());
+        }
+    }
+
+    fn tick_tstate(&mut self) {
+        let frame_tstate = self.ula.frame_tstate();
+
+        // The ULA pixel clock is twice the Z80 clock.
+        self.ula.tick();
+        self.bus_tick();
+        self.ula.tick();
+        self.bus_tick();
+
+        if self.contention_remaining != 0 {
+            self.contention_remaining -= 1;
+            return;
+        }
+
+        let precontended_io = pending_io_cycle(&self.cpu);
+        let trap = self.cpu.tick();
+        self.bus_tick();
+
+        if let Some(port) = precontended_io {
+            self.contention_remaining = io_contention_delay(frame_tstate, port);
+            self.io_cycle_precontended = true;
+        } else if let Some(addr) = memory_cycle_started(&self.cpu) {
+            if is_contended_address(addr) {
+                self.contention_remaining = memory_contention_delay(frame_tstate);
+            }
+        } else if let Some(port) = port_cycle_started(&self.cpu) {
+            if self.io_cycle_precontended {
+                self.io_cycle_precontended = false;
+            } else {
+                self.contention_remaining = io_contention_delay(frame_tstate, port);
+            }
+        }
+
+        if trap == Some(0x056B) {
+            self.ula.clean_keyboard();
+
+            match self.tap_state {
+                TapState::Empty => {
+                    self.tap_state = TapState::Loading;
+                    load_tap_file(self.machine_ctl_tx.clone());
+                }
+                TapState::Loading => (),
+                TapState::Ready => self.load_tap_block(),
+            }
         }
     }
 
@@ -252,6 +287,138 @@ impl Zx48k {
 
         self.cpu.regs.pc = 0x05e2;
         self.cpu.wait = false;
+    }
+}
+
+fn is_contended_address(addr: u16) -> bool {
+    addr & 0xc000 == 0x4000
+}
+
+fn memory_contention_delay(frame_tstate: usize) -> u8 {
+    let Some(display_tstate) = frame_tstate.checked_sub(FIRST_CONTENDED_TSTATE) else {
+        return 0;
+    };
+    let line = display_tstate / TSTATES_PER_LINE;
+    let line_tstate = display_tstate % TSTATES_PER_LINE;
+
+    if line < CONTENDED_LINES && line_tstate < CONTENDED_TSTATES_PER_LINE {
+        CONTENTION_PATTERN[line_tstate % CONTENTION_PATTERN.len()]
+    } else {
+        0
+    }
+}
+
+fn io_contention_delay(frame_tstate: usize, port: u16) -> u8 {
+    let high_byte_contended = is_contended_address(port);
+    let low_byte_even = port & 1 == 0;
+
+    // The documented sequences are C:1,C:3 / N:1,C:3 / C:1,N:3.
+    // Each C segment samples the contention table once, then consumes the
+    // stated number of ordinary T-states.
+    let segments = match (high_byte_contended, low_byte_even) {
+        (true, true) => [(true, 1usize), (true, 3usize)],
+        (false, true) => [(false, 1), (true, 3)],
+        (true, false) => [(true, 1), (false, 3)],
+        (false, false) => [(false, 1), (false, 3)],
+    };
+
+    let mut elapsed = 0usize;
+    for (contended, duration) in segments {
+        if contended {
+            elapsed +=
+                memory_contention_delay((frame_tstate + elapsed) % TSTATES_PER_FRAME) as usize;
+        }
+        elapsed += duration;
+    }
+
+    (elapsed - 4) as u8
+}
+
+fn memory_cycle_started(cpu: &CPU) -> Option<u16> {
+    match (cpu.current_ops, cpu.current_ops_ts) {
+        (Some(Operation::Fetch), 1) | (Some(Operation::MrPcN), 1) | (Some(Operation::MrPcD), 1) => {
+            Some(cpu.signals.addr)
+        }
+        (Some(Operation::MrAddrN(addr)), 1)
+        | (Some(Operation::MrAddrR(addr, _)), 1)
+        | (Some(Operation::Mw8(addr, _)), 1)
+        | (Some(Operation::Mw16(addr, _)), 1) => Some(addr),
+        (Some(Operation::Mw16(addr, _)), 4) => Some(addr.wrapping_add(1)),
+        _ => None,
+    }
+}
+
+fn port_cycle_started(cpu: &CPU) -> Option<u16> {
+    match (cpu.current_ops, cpu.current_ops_ts) {
+        (Some(Operation::Pw8(port, _)), 1) | (Some(Operation::PrR(port, _, _)), 1) => Some(port),
+        _ => None,
+    }
+}
+
+// Immediate I/O instructions model their first I/O T-state as a Delay(1)
+// immediately before the three-state port operation. Detect that boundary so
+// contention is applied to the complete four-state I/O cycle.
+fn pending_io_cycle(cpu: &CPU) -> Option<u16> {
+    let port_operation = match (cpu.current_ops, cpu.current_ops_ts) {
+        (Some(Operation::Delay(1)), 0) => cpu.scheduler.first(),
+        // Delay(1) is selected and completed in one CPU tick, so it normally
+        // remains at the front of the scheduler when this boundary is checked.
+        (None, 0) if matches!(cpu.scheduler.first(), Some(Operation::Delay(1))) => {
+            cpu.scheduler.get(1)
+        }
+        _ => return None,
+    };
+
+    match port_operation {
+        Some(Operation::Pw8(port, _)) | Some(Operation::PrR(port, _, _)) => Some(*port),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_contention_uses_the_48k_delay_pattern() {
+        let delays: Vec<u8> = (0..8)
+            .map(|offset| memory_contention_delay(FIRST_CONTENDED_TSTATE + offset))
+            .collect();
+
+        assert_eq!(delays, CONTENTION_PATTERN);
+        assert_eq!(memory_contention_delay(FIRST_CONTENDED_TSTATE - 1), 0);
+        assert_eq!(
+            memory_contention_delay(FIRST_CONTENDED_TSTATE + CONTENDED_TSTATES_PER_LINE),
+            0
+        );
+    }
+
+    #[test]
+    fn contention_is_limited_to_the_192_display_lines() {
+        let last_line = FIRST_CONTENDED_TSTATE + (CONTENDED_LINES - 1) * TSTATES_PER_LINE;
+        let line_after_display = FIRST_CONTENDED_TSTATE + CONTENDED_LINES * TSTATES_PER_LINE;
+
+        assert_eq!(memory_contention_delay(last_line), 6);
+        assert_eq!(memory_contention_delay(line_after_display), 0);
+    }
+
+    #[test]
+    fn io_contention_depends_on_both_halves_of_the_port_address() {
+        let tstate = FIRST_CONTENDED_TSTATE;
+
+        assert_eq!(io_contention_delay(tstate, 0x00ff), 0);
+        assert_eq!(io_contention_delay(tstate, 0x00fe), 5);
+        assert_eq!(io_contention_delay(tstate, 0x40ff), 6);
+        assert_eq!(io_contention_delay(tstate, 0x40fe), 6);
+    }
+
+    #[test]
+    fn immediate_io_contention_starts_at_the_leading_delay() {
+        let mut cpu = CPU::new();
+        cpu.current_ops = None;
+        cpu.scheduler = vec![Operation::Delay(1), Operation::Pw8(0x00fe, 1)];
+
+        assert_eq!(pending_io_cycle(&cpu), Some(0x00fe));
     }
 }
 

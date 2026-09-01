@@ -18,7 +18,7 @@ use iced::{
         button, column, container, image, row, rule, scrollable, slider, text, toggler, Image,
         Space,
     },
-    Alignment, ContentFit, Element, Event, Font, Length, Size, Subscription, Theme,
+    Alignment, ContentFit, Element, Event, Font, Length, Size, Subscription, Task, Theme,
 };
 use std::{
     panic, process,
@@ -71,6 +71,25 @@ fn set_macos_dock_icon() {
     unsafe { application.setApplicationIconImage(Some(&icon)) };
 }
 
+#[cfg(target_os = "macos")]
+fn macos_is_fullscreen() -> Option<bool> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSWindowStyleMask};
+
+    let main_thread = MainThreadMarker::new()?;
+    let application = NSApplication::sharedApplication(main_thread);
+    let window = application
+        .mainWindow()
+        .or_else(|| application.keyWindow())?;
+
+    Some(window.styleMask().contains(NSWindowStyleMask::FullScreen))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_is_fullscreen() -> Option<bool> {
+    None
+}
+
 #[cfg(not(target_os = "macos"))]
 fn set_macos_dock_icon() {}
 
@@ -93,6 +112,8 @@ enum Message {
     KeyEvent(KeyEvent),
     SetVolume(f32),
     SetFastTapeLoading(bool),
+    WindowChanged(iced::window::Id),
+    WindowModeChanged(iced::window::Mode),
     TogglePause,
     StepInstruction,
     LoadGame,
@@ -114,6 +135,7 @@ struct UI {
     debug: Option<DebugSnapshot>,
     paused: bool,
     fast_tape_loading: bool,
+    fullscreen: bool,
     stream: Option<Stream>,
     volume: Arc<Mutex<f32>>,
     error: Option<String>,
@@ -167,6 +189,7 @@ impl Default for UI {
             debug: None,
             paused: false,
             fast_tape_loading: true,
+            fullscreen: false,
             stream: None,
             volume: Arc::new(Mutex::new(0.5)),
             error: None,
@@ -179,7 +202,11 @@ impl UI {
         Theme::TokyoNightStorm
     }
 
-    pub fn update(&mut self, msg: Message) {
+    pub fn update(&mut self, msg: Message) -> Task<Message> {
+        if let Message::WindowChanged(id) = msg {
+            return iced::window::mode(id).map(Message::WindowModeChanged);
+        }
+
         match (msg, self.event_tx.as_mut()) {
             (Message::Ready(sender), _) => {
                 let (event_tx, event_rx) = channel::<KeyEvent>(10);
@@ -215,7 +242,7 @@ impl UI {
                         let message = format!("Unable to start emulator: {error:#}");
                         eprintln!("{message}");
                         self.error = Some(message);
-                        return;
+                        return Task::none();
                     }
                 };
 
@@ -230,6 +257,9 @@ impl UI {
             (Message::SetBuffer(b), _) => {
                 self.buffer = b;
                 self.fps.tick();
+                if let Some(fullscreen) = macos_is_fullscreen() {
+                    self.fullscreen = fullscreen;
+                }
             }
             (Message::DebugSnapshot(snapshot), _) => {
                 self.paused = snapshot.paused;
@@ -244,6 +274,9 @@ impl UI {
                 if let Some(tx) = self.machine_ctl_tx.as_mut() {
                     let _ = tx.start_send(MachineMessage::SetFastTapeLoading(enabled));
                 }
+            }
+            (Message::WindowModeChanged(mode), _) => {
+                self.fullscreen = mode == iced::window::Mode::Fullscreen;
             }
             (Message::Reset, _) => {
                 if let Some(tx) = self.machine_ctl_tx.as_mut() {
@@ -278,6 +311,8 @@ impl UI {
             }
             _ => (),
         }
+
+        Task::none()
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -292,6 +327,16 @@ impl UI {
             .content_fit(ContentFit::Contain)
             .width(Length::Fill)
             .height(Length::Fill);
+
+        if self.fullscreen {
+            return container(screen)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .style(container::dark)
+                .into();
+        }
 
         let run_label = if self.paused {
             "▶  Run"
@@ -452,11 +497,15 @@ impl UI {
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch(vec![
             self.some_worker(),
-            event::listen_with(|event, _, _| match event {
-                Event::Keyboard(e) => Some(e),
+            event::listen_with(|event, _, window| match event {
+                Event::Keyboard(e) => Some(Message::KeyEvent(e)),
+                Event::Window(
+                    iced::window::Event::Opened { .. }
+                    | iced::window::Event::Resized(_)
+                    | iced::window::Event::Focused,
+                ) => Some(Message::WindowChanged(window)),
                 _ => None,
-            })
-            .map(Message::KeyEvent),
+            }),
         ])
     }
 

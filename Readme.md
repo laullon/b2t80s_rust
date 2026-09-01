@@ -34,6 +34,10 @@ The desktop UI includes a live Z80 debugger panel with register and flag state,
 beam position, recent instructions, and controls to pause, resume, reset, or
 execute one instruction at a time.
 
+Entering native fullscreen switches to presentation mode, showing only the
+Spectrum framebuffer. The debugger, toolbar, status bar, and panel chrome
+return automatically when leaving fullscreen.
+
 The **Load Game…** control resets the Spectrum and types the original 48K BASIC
 `LOAD ""` key sequence. The ROM's existing tape-loading path then opens the
 native TAP file dialog. **Fast Tape** uses the ROM trap for near-instant loads

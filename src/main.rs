@@ -1,6 +1,6 @@
 use b2t80s_rust::zxspectrum::{
     ula::{SCREEN_HEIGHT, SCREEN_WIDTH, SRC_SIZE},
-    zx48k::{MachineMessage, UICommands, Zx48k},
+    zx48k::{DebugSnapshot, MachineMessage, UICommands, Zx48k},
 };
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -14,8 +14,8 @@ use iced::{
     },
     keyboard::Event as KeyEvent,
     stream,
-    widget::{button, column, container, image, row, slider, text, tooltip, Image},
-    Alignment, ContentFit, Element, Event, Length, Subscription,
+    widget::{button, column, container, image, row, rule, scrollable, slider, text, Image, Space},
+    Alignment, ContentFit, Element, Event, Font, Length, Size, Subscription, Theme,
 };
 use std::{
     panic, process,
@@ -33,10 +33,50 @@ fn main() -> iced::Result {
         process::exit(1);
     }));
 
+    set_macos_dock_icon();
+
     iced::application(UI::default, UI::update, UI::view)
-        .title("ZX Spectrum 48K")
+        .title("b2t80s · ZX Spectrum Debugger")
+        .theme(UI::theme)
+        .window(iced::window::Settings {
+            size: Size::new(1280.0, 780.0),
+            min_size: Some(Size::new(980.0, 620.0)),
+            icon: window_icon(),
+            ..iced::window::Settings::default()
+        })
+        .centered()
         .subscription(UI::subscription)
         .run()
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(include_bytes!("../assets/app-icon.png"));
+    let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(main_thread);
+
+    // SAFETY: This runs on the main thread and `icon` is a valid NSImage.
+    unsafe { application.setApplicationIconImage(Some(&icon)) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_macos_dock_icon() {}
+
+fn window_icon() -> Option<iced::window::Icon> {
+    let icon = ::image::load_from_memory(include_bytes!("../assets/app-icon.png"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = icon.dimensions();
+    iced::window::icon::from_rgba(icon.into_raw(), width, height).ok()
 }
 
 /* ********************************************* */
@@ -46,8 +86,12 @@ fn main() -> iced::Result {
 enum Message {
     Ready(Sender<UICommands>),
     SetBuffer(usize),
+    DebugSnapshot(DebugSnapshot),
     KeyEvent(KeyEvent),
     SetVolume(f32),
+    TogglePause,
+    StepInstruction,
+    LoadGame,
     Reset,
 }
 
@@ -57,11 +101,14 @@ enum State {
 }
 
 struct UI {
+    app_icon: image::Handle,
     bitmaps: [Arc<Mutex<Vec<u8>>>; 2],
     buffer: usize,
     machine_ctl_tx: Option<Sender<MachineMessage>>,
     event_tx: Option<Sender<KeyEvent>>,
     fps: FPSCounter,
+    debug: Option<DebugSnapshot>,
+    paused: bool,
     stream: Option<Stream>,
     volume: Arc<Mutex<f32>>,
     error: Option<String>,
@@ -104,11 +151,16 @@ impl Default for UI {
         let scr_bitmap_2 = Arc::new(Mutex::new(bitmap_2));
 
         Self {
+            app_icon: image::Handle::from_bytes(
+                include_bytes!("../assets/app-icon.png").as_slice(),
+            ),
             bitmaps: [scr_bitmap, scr_bitmap_2],
             buffer: 0,
             machine_ctl_tx: None,
             event_tx: None,
             fps: FPSCounter::new(),
+            debug: None,
+            paused: false,
             stream: None,
             volume: Arc::new(Mutex::new(0.5)),
             error: None,
@@ -117,11 +169,15 @@ impl Default for UI {
 }
 
 impl UI {
+    pub fn theme(&self) -> Theme {
+        Theme::TokyoNightStorm
+    }
+
     pub fn update(&mut self, msg: Message) {
         match (msg, self.event_tx.as_mut()) {
             (Message::Ready(sender), _) => {
                 let (event_tx, event_rx) = channel::<KeyEvent>(10);
-                let (machine_ctl_tx, machine_ctl_rx) = channel::<MachineMessage>(0);
+                let (machine_ctl_tx, machine_ctl_rx) = channel::<MachineMessage>(16);
 
                 let sound_tx = match SoundEngine::init_engine(self.volume.clone()) {
                     Ok((stream, sound_tx)) => match stream.play() {
@@ -169,6 +225,10 @@ impl UI {
                 self.buffer = b;
                 self.fps.tick();
             }
+            (Message::DebugSnapshot(snapshot), _) => {
+                self.paused = snapshot.paused;
+                self.debug = Some(snapshot);
+            }
             (Message::SetVolume(b), _) => {
                 *self.volume.lock().unwrap() = b;
                 println!("SetVolume: {}", b);
@@ -177,6 +237,29 @@ impl UI {
                 if let Some(tx) = self.machine_ctl_tx.as_mut() {
                     let _ = tx.start_send(MachineMessage::Reset);
                 }
+            }
+            (Message::TogglePause, _) => {
+                self.paused = !self.paused;
+                if let Some(tx) = self.machine_ctl_tx.as_mut() {
+                    let command = if self.paused {
+                        MachineMessage::CPUWait
+                    } else {
+                        MachineMessage::CPUResume
+                    };
+                    let _ = tx.start_send(command);
+                }
+            }
+            (Message::StepInstruction, _) => {
+                self.paused = true;
+                if let Some(tx) = self.machine_ctl_tx.as_mut() {
+                    let _ = tx.start_send(MachineMessage::CPUStep);
+                }
+            }
+            (Message::LoadGame, _) => {
+                if let Some(machine_tx) = self.machine_ctl_tx.as_mut() {
+                    let _ = machine_tx.start_send(MachineMessage::TypeLoadCommand);
+                }
+                self.paused = false;
             }
             (Message::KeyEvent(e), Some(tx)) => {
                 let _ = tx.start_send(e);
@@ -194,32 +277,158 @@ impl UI {
 
         let screen = Image::<image::Handle>::new(screen)
             .filter_method(image::FilterMethod::Nearest)
-            .content_fit(ContentFit::Cover)
+            .content_fit(ContentFit::Contain)
             .width(Length::Fill)
             .height(Length::Fill);
 
+        let run_label = if self.paused {
+            "▶  Run"
+        } else {
+            "Ⅱ  Pause"
+        };
         let controls = row![
-            action(text("Reset"), "Reset", Some(Message::Reset)),
-            text("Volume"),
+            Image::<image::Handle>::new(self.app_icon.clone())
+                .width(Length::Fixed(30.0))
+                .height(Length::Fixed(30.0)),
+            text("b2t80s").size(22),
+            text("ZX Spectrum 48K").size(14),
+            Space::new().width(Length::Fill),
+            action(text("Load Game…"), Some(Message::LoadGame)),
+            action(text(run_label), Some(Message::TogglePause)),
+            action(
+                text("↦  Step"),
+                self.paused.then_some(Message::StepInstruction),
+            ),
+            action(text("↻  Reset"), Some(Message::Reset)),
+            text("VOL").size(12),
             slider::Slider::new(0.0..=1.0, *self.volume.lock().unwrap(), Message::SetVolume)
                 .step(0.1)
-                .width(Length::Fixed(100.0)),
+                .width(Length::Fixed(90.0)),
         ]
-        .spacing(10)
-        .padding(10)
+        .spacing(12)
+        .padding([10, 14])
         .align_y(Alignment::Center);
 
-        let content = column![
-            controls,
-            screen,
-            text(format!("FPS: {:.2}", self.fps.fps)),
-            text(self.error.as_deref().unwrap_or_default()),
+        let screen_panel = container(screen)
+            .padding(12)
+            .width(Length::FillPortion(7))
+            .height(Length::Fill)
+            .style(container::bordered_box);
+
+        let debugger = self.debugger_panel();
+        let workspace = row![screen_panel, debugger]
+            .spacing(12)
+            .padding([0, 12])
+            .height(Length::Fill);
+
+        let state = if self.paused { "PAUSED" } else { "RUNNING" };
+        let status = row![
+            text(format!("● {state}")).size(12),
+            text(format!("FPS {:05.2}", self.fps.fps))
+                .size(12)
+                .font(Font::MONOSPACE),
+            Space::new().width(Length::Fill),
+            text(self.error.as_deref().unwrap_or("Ready")).size(12),
         ]
-        .height(Length::Fill);
+        .spacing(18)
+        .padding([8, 14]);
+
+        let content = column![controls, rule::horizontal(1), workspace, status]
+            .spacing(8)
+            .height(Length::Fill);
 
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
+            .into()
+    }
+
+    fn debugger_panel(&self) -> Element<'_, Message> {
+        let Some(debug) = self.debug.as_ref() else {
+            return container(column![
+                text("DEBUGGER").size(18),
+                text("Waiting for machine state…"),
+            ])
+            .padding(16)
+            .width(Length::FillPortion(5))
+            .height(Length::Fill)
+            .style(container::rounded_box)
+            .into();
+        };
+
+        let regs = debug.registers;
+        let register_rows = column![
+            register_row("AF", regs.af(), "BC", regs.bc()),
+            register_row("DE", regs.de(), "HL", regs.hl()),
+            register_row("IX", regs.ix(), "IY", regs.iy()),
+            register_row("SP", regs.sp, "PC", regs.pc),
+            register_row(
+                "AF′",
+                regs.af_aux(),
+                "IR",
+                ((regs.i as u16) << 8) | regs.r as u16
+            ),
+        ]
+        .spacing(7);
+
+        let flags = format!(
+            "{}{}{}{}{}{}{}{}",
+            flag('S', regs.f.s),
+            flag('Z', regs.f.z),
+            flag('5', regs.f.f5),
+            flag('H', regs.f.h),
+            flag('3', regs.f.f3),
+            flag('P', regs.f.p),
+            flag('N', regs.f.n),
+            flag('C', regs.f.c),
+        );
+
+        let trace = debug
+            .recent_instructions
+            .iter()
+            .rev()
+            .fold(column![].spacing(5), |trace, instruction| {
+                trace.push(text(instruction).size(13).font(Font::MONOSPACE))
+            });
+
+        let panel = column![
+            row![
+                text("CPU DEBUGGER").size(18),
+                Space::new().width(Length::Fill),
+                text(if debug.halted { "HALT" } else { "Z80" }).size(12),
+            ]
+            .align_y(Alignment::Center),
+            text(format!(
+                "FRAME {:05}  LINE {:03}  T {:03}",
+                debug.frame_tstate,
+                debug.frame_tstate / 224,
+                debug.frame_tstate % 224
+            ))
+            .size(12)
+            .font(Font::MONOSPACE),
+            rule::horizontal(1),
+            text("REGISTERS").size(12),
+            register_rows,
+            text(format!("FLAGS  {flags}    IM {}", regs.im))
+                .size(13)
+                .font(Font::MONOSPACE),
+            rule::horizontal(1),
+            row![
+                text("RECENT INSTRUCTIONS").size(12),
+                Space::new().width(Length::Fill),
+                text("newest first").size(11),
+            ],
+            scrollable(trace).height(Length::Fill),
+            rule::horizontal(1),
+            text("NEXT: breakpoints · memory · watches").size(11),
+        ]
+        .spacing(11);
+
+        container(panel)
+            .padding(16)
+            .width(Length::FillPortion(5))
+            .height(Length::Fill)
+            .style(container::rounded_box)
             .into()
     }
 
@@ -255,6 +464,9 @@ fn worker_stream() -> impl iced::futures::Stream<Item = Message> {
                         Some(UICommands::DrawBuffer(b)) => {
                             let _ = output.send(Message::SetBuffer(b)).await;
                         }
+                        Some(UICommands::DebugSnapshot(snapshot)) => {
+                            let _ = output.send(Message::DebugSnapshot(snapshot)).await;
+                        }
                         None => unreachable!(),
                     }
                 }
@@ -263,20 +475,39 @@ fn worker_stream() -> impl iced::futures::Stream<Item = Message> {
     })
 }
 
+fn register_row<'a>(
+    left_name: &'a str,
+    left_value: u16,
+    right_name: &'a str,
+    right_value: u16,
+) -> Element<'a, Message> {
+    row![
+        text(format!("{left_name:<3} {left_value:04X}"))
+            .font(Font::MONOSPACE)
+            .width(Length::FillPortion(1)),
+        text(format!("{right_name:<3} {right_value:04X}"))
+            .font(Font::MONOSPACE)
+            .width(Length::FillPortion(1)),
+    ]
+    .spacing(16)
+    .into()
+}
+
+fn flag(name: char, enabled: bool) -> char {
+    if enabled {
+        name
+    } else {
+        '·'
+    }
+}
+
 fn action<'a, Message: Clone + 'a>(
     content: impl Into<Element<'a, Message>>,
-    label: &'a str,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
     let action = button(container(content));
     if let Some(on_press) = on_press {
-        tooltip(
-            action.on_press(on_press),
-            label,
-            tooltip::Position::FollowCursor,
-        )
-        .style(container::rounded_box)
-        .into()
+        action.on_press(on_press).into()
     } else {
         action.style(button::secondary).into()
     }

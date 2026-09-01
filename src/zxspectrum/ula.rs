@@ -227,7 +227,7 @@ impl ULA {
         }
 
         match self.event_rx.try_recv() {
-            Ok(e) => self.on_key(e),
+            Ok(event) => self.on_key(event),
             _ => (),
             // Ok(Some(event)) => self.on_key(event),
             // Err(_) => (),
@@ -411,6 +411,10 @@ impl ULA {
         } else {
             self.keyboard_row[row] &= !b;
         }
+    }
+
+    pub(crate) fn set_matrix_key(&mut self, row: usize, bit: usize, pressed: bool) {
+        self.set_bit(row, bit, pressed);
     }
 
     pub(crate) fn clean_keyboard(&mut self) {

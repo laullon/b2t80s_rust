@@ -15,6 +15,33 @@ B2T80S_ROM=/path/to/48.rom cargo run
 Audio is optional. If no compatible output device is available, the emulator
 continues with audio disabled.
 
+### macOS app
+
+Build a native application bundle so macOS uses the project icon in Finder,
+the app switcher, and the Dock:
+
+```sh
+./scripts/build-macos-app.sh
+open target/release/bundle/b2t80s.app
+```
+
+Launching with `cargo run` still runs a bare executable rather than the bundled
+application.
+
+## Debugger
+
+The desktop UI includes a live Z80 debugger panel with register and flag state,
+beam position, recent instructions, and controls to pause, resume, reset, or
+execute one instruction at a time.
+
+The **Load Game…** control resets the Spectrum and types the original 48K BASIC
+`LOAD ""` key sequence. The ROM's existing tape-loading path then opens the
+native TAP file dialog.
+
+Planned debugger additions include address and conditional breakpoints, a
+memory/stack inspector, watch expressions, and a raster timeline for diagnosing
+ULA contention and border effects.
+
 ## Tests
 
 ```sh

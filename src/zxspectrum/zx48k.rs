@@ -1,7 +1,9 @@
 use iced::futures::channel::mpsc::{Receiver, Sender};
+use iced::keyboard::Event as KeyEvent;
 use rfd::FileDialog;
 use tokio::task;
 
+use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use std::{env, fs::File, io::Read, path::PathBuf};
@@ -21,13 +23,13 @@ const CONTENDED_LINES: usize = 192;
 const CONTENDED_TSTATES_PER_LINE: usize = 128;
 const CONTENTION_PATTERN: [u8; 8] = [6, 5, 4, 3, 2, 1, 0, 0];
 
-use iced::keyboard::Event as KeyEvent;
-
 #[derive(Debug)]
 pub enum MachineMessage {
     CPUWait,
     CPUResume,
+    CPUStep,
     CPUSetRegisters(Registers),
+    TypeLoadCommand,
     Reset,
     TapLoad(std::path::PathBuf),
 }
@@ -37,6 +39,95 @@ enum TapState {
     Empty,
     Loading,
     Ready,
+}
+
+#[derive(Debug)]
+enum KeyboardStep {
+    Wait(u8),
+    SetKey {
+        row: usize,
+        bit: usize,
+        pressed: bool,
+    },
+}
+
+#[derive(Debug)]
+struct KeyboardScript {
+    steps: VecDeque<KeyboardStep>,
+    wait_frames: u8,
+    wait_for_basic_prompt: bool,
+}
+
+impl KeyboardScript {
+    fn load_command() -> Self {
+        let mut steps = VecDeque::new();
+
+        // J enters the LOAD keyword in K mode.
+        push_key(&mut steps, 6, 4);
+
+        // A quote is SYMBOL SHIFT + P on the Spectrum keyboard.
+        push_quote(&mut steps);
+        push_quote(&mut steps);
+
+        // ENTER executes LOAD "".
+        push_key(&mut steps, 6, 1);
+
+        Self {
+            steps,
+            wait_frames: 0,
+            wait_for_basic_prompt: true,
+        }
+    }
+
+    fn observe_pc(&mut self, pc: u16) {
+        // 0x0F38 is ED-LOOP, the editor's own call site for WAIT-KEY.
+        // WAIT-KEY (0x15D4) is shared by several non-editor ROM paths and
+        // can be reached during startup before the BASIC K cursor is ready.
+        if self.wait_for_basic_prompt && pc == 0x0f38 {
+            self.wait_for_basic_prompt = false;
+        }
+    }
+}
+
+fn push_key(steps: &mut VecDeque<KeyboardStep>, row: usize, bit: usize) {
+    steps.push_back(KeyboardStep::SetKey {
+        row,
+        bit,
+        pressed: true,
+    });
+    steps.push_back(KeyboardStep::Wait(4));
+    steps.push_back(KeyboardStep::SetKey {
+        row,
+        bit,
+        pressed: false,
+    });
+    steps.push_back(KeyboardStep::Wait(4));
+}
+
+fn push_quote(steps: &mut VecDeque<KeyboardStep>) {
+    steps.push_back(KeyboardStep::SetKey {
+        row: 7,
+        bit: 2,
+        pressed: true,
+    });
+    steps.push_back(KeyboardStep::Wait(2));
+    steps.push_back(KeyboardStep::SetKey {
+        row: 5,
+        bit: 1,
+        pressed: true,
+    });
+    steps.push_back(KeyboardStep::Wait(4));
+    steps.push_back(KeyboardStep::SetKey {
+        row: 5,
+        bit: 1,
+        pressed: false,
+    });
+    steps.push_back(KeyboardStep::SetKey {
+        row: 7,
+        bit: 2,
+        pressed: false,
+    });
+    steps.push_back(KeyboardStep::Wait(4));
 }
 
 pub struct Zx48k {
@@ -50,15 +141,29 @@ pub struct Zx48k {
 
     contention_remaining: u8,
     io_cycle_precontended: bool,
+    paused: bool,
+    step_instruction: bool,
+    keyboard_script: Option<KeyboardScript>,
 
     machine_ctl_rx: Receiver<MachineMessage>,
     machine_ctl_tx: Sender<MachineMessage>,
+    ui_ctl_tx: Sender<UICommands>,
 }
 
 // todo: review, and move out
 #[derive(Debug)]
 pub enum UICommands {
     DrawBuffer(usize),
+    DebugSnapshot(DebugSnapshot),
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugSnapshot {
+    pub registers: Registers,
+    pub halted: bool,
+    pub paused: bool,
+    pub frame_tstate: usize,
+    pub recent_instructions: Vec<String>,
 }
 
 impl Zx48k {
@@ -80,6 +185,10 @@ impl Zx48k {
             tap_state: TapState::Empty,
             contention_remaining: 0,
             io_cycle_precontended: false,
+            paused: false,
+            step_instruction: false,
+            keyboard_script: None,
+            ui_ctl_tx,
         })
     }
 
@@ -92,10 +201,21 @@ impl Zx48k {
                 self.tick_tstate();
             }
 
-            match self.machine_ctl_rx.try_recv() {
-                Ok(msg) => match msg {
-                    MachineMessage::CPUWait => self.cpu.wait = true,
-                    MachineMessage::CPUResume => self.cpu.wait = false,
+            while let Ok(msg) = self.machine_ctl_rx.try_recv() {
+                match msg {
+                    MachineMessage::CPUWait => {
+                        self.paused = true;
+                        self.step_instruction = false;
+                    }
+                    MachineMessage::CPUResume => {
+                        self.paused = false;
+                        self.step_instruction = false;
+                    }
+                    MachineMessage::CPUStep => {
+                        self.paused = true;
+                        self.step_instruction = true;
+                    }
+                    MachineMessage::TypeLoadCommand => self.start_load_command(),
                     MachineMessage::Reset => self.reset(),
                     MachineMessage::CPUSetRegisters(_) => todo!(),
                     MachineMessage::TapLoad(file) => match Tap::new(&file) {
@@ -108,14 +228,23 @@ impl Zx48k {
                             self.reset();
                         }
                     },
-                },
-                Err(_) => {}
+                }
             }
+            self.advance_keyboard_script();
+            self.send_debug_snapshot();
             // println!("t: {}ms", t.elapsed().as_millis());
         }
     }
 
     fn tick_tstate(&mut self) {
+        if self.paused && !self.step_instruction {
+            return;
+        }
+
+        if let Some(script) = self.keyboard_script.as_mut() {
+            script.observe_pc(self.cpu.regs.pc);
+        }
+
         let frame_tstate = self.ula.frame_tstate();
 
         // The ULA pixel clock is twice the Z80 clock.
@@ -132,6 +261,10 @@ impl Zx48k {
         let precontended_io = pending_io_cycle(&self.cpu);
         let trap = self.cpu.tick();
         self.bus_tick();
+
+        if self.step_instruction && trap.is_some() {
+            self.step_instruction = false;
+        }
 
         if let Some(port) = precontended_io {
             self.contention_remaining = io_contention_delay(frame_tstate, port);
@@ -164,8 +297,61 @@ impl Zx48k {
 
     fn reset(self: &mut Self) {
         self.cpu.do_reset = true;
+        self.paused = false;
+        self.step_instruction = false;
+        self.keyboard_script = None;
+        self.ula.clean_keyboard();
         self.tap = None;
         self.tap_state = TapState::Empty;
+    }
+
+    fn start_load_command(&mut self) {
+        self.reset();
+        self.keyboard_script = Some(KeyboardScript::load_command());
+    }
+
+    fn advance_keyboard_script(&mut self) {
+        let Some(mut script) = self.keyboard_script.take() else {
+            return;
+        };
+
+        if script.wait_for_basic_prompt {
+            self.keyboard_script = Some(script);
+            return;
+        }
+
+        if script.wait_frames != 0 {
+            script.wait_frames -= 1;
+            self.keyboard_script = Some(script);
+            return;
+        }
+
+        loop {
+            match script.steps.pop_front() {
+                Some(KeyboardStep::Wait(frames)) => {
+                    script.wait_frames = frames;
+                    self.keyboard_script = Some(script);
+                    return;
+                }
+                Some(KeyboardStep::SetKey { row, bit, pressed }) => {
+                    self.ula.set_matrix_key(row, bit, pressed)
+                }
+                None => return,
+            }
+        }
+    }
+
+    fn send_debug_snapshot(&mut self) {
+        let snapshot = DebugSnapshot {
+            registers: self.cpu.regs,
+            halted: self.cpu.halt,
+            paused: self.paused,
+            frame_tstate: self.ula.frame_tstate(),
+            recent_instructions: self.cpu.log.clone(),
+        };
+        let _ = self
+            .ui_ctl_tx
+            .start_send(UICommands::DebugSnapshot(snapshot));
     }
 
     fn mem_read(self: &mut Self, addr: u16) -> u8 {
@@ -378,6 +564,50 @@ fn pending_io_cycle(cpu: &CPU) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_command_types_the_spectrum_keyboard_sequence() {
+        let script = KeyboardScript::load_command();
+        assert!(script.wait_for_basic_prompt);
+
+        let keys: Vec<(usize, usize, bool)> = script
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                KeyboardStep::SetKey { row, bit, pressed } => Some((*row, *bit, *pressed)),
+                KeyboardStep::Wait(_) => None,
+            })
+            .collect();
+
+        assert_eq!(
+            keys,
+            vec![
+                (6, 4, true),
+                (6, 4, false),
+                (7, 2, true),
+                (5, 1, true),
+                (5, 1, false),
+                (7, 2, false),
+                (7, 2, true),
+                (5, 1, true),
+                (5, 1, false),
+                (7, 2, false),
+                (6, 1, true),
+                (6, 1, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn load_command_starts_when_the_rom_reaches_the_basic_prompt() {
+        let mut script = KeyboardScript::load_command();
+
+        script.observe_pc(0x15d4);
+        assert!(script.wait_for_basic_prompt);
+
+        script.observe_pc(0x0f38);
+        assert!(!script.wait_for_basic_prompt);
+    }
 
     #[test]
     fn memory_contention_uses_the_48k_delay_pattern() {

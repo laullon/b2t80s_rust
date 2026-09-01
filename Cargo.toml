@@ -15,6 +15,12 @@ iced = { version = "0.14", features = [
 ] }
 cpal = "0.18.2"
 anyhow = "1.0.104"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
 
 [profile.release]
 debug = false

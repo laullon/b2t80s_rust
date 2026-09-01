@@ -10,6 +10,7 @@ use std::{env, fs::File, io::Read, path::PathBuf};
 
 use crate::signals::SignalReq;
 use crate::z80::cpu::{Operation, CPU};
+use crate::z80::diss::disassemble_at;
 use crate::z80::registers::Registers;
 
 use super::tap::{Tap, TapePlayer};
@@ -171,6 +172,7 @@ pub struct DebugSnapshot {
     pub paused: bool,
     pub frame_tstate: usize,
     pub recent_instructions: Vec<String>,
+    pub next_instructions: Vec<String>,
 }
 
 impl Zx48k {
@@ -315,6 +317,7 @@ impl Zx48k {
 
     fn reset(self: &mut Self) {
         self.cpu.do_reset = true;
+        self.cpu.log.clear();
         self.paused = false;
         self.step_instruction = false;
         self.keyboard_script = None;
@@ -396,12 +399,21 @@ impl Zx48k {
     }
 
     fn send_debug_snapshot(&mut self) {
+        let mut pc = self.cpu.regs.pc;
+        let mut next_instructions = Vec::with_capacity(6);
+        for _ in 0..6 {
+            let (instruction, next_pc) = disassemble_at(pc, |address| self.mem_peek(address));
+            next_instructions.push(instruction);
+            pc = next_pc;
+        }
+
         let snapshot = DebugSnapshot {
             registers: self.cpu.regs,
             halted: self.cpu.halt,
             paused: self.paused,
             frame_tstate: self.ula.frame_tstate(),
             recent_instructions: self.cpu.log.clone(),
+            next_instructions,
         };
         let _ = self
             .ui_ctl_tx
@@ -414,6 +426,12 @@ impl Zx48k {
         let data = self.memory[bank][addr];
         // println!("\tMR {:04x} {:02x}", signals.addr, signals.data)
         data
+    }
+
+    fn mem_peek(&self, addr: u16) -> u8 {
+        let bank = (addr >> 14) as usize;
+        let offset = (addr & 0x3fff) as usize;
+        self.memory[bank][offset]
     }
 
     fn mem_write(self: &mut Self, addr: u16, data: u8) {

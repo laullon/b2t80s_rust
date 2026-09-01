@@ -14,10 +14,7 @@ use iced::{
     },
     keyboard::Event as KeyEvent,
     stream,
-    widget::{
-        button, column, container, image, row, rule, scrollable, slider, text, toggler, Image,
-        Space,
-    },
+    widget::{button, column, container, image, row, rule, slider, text, toggler, Image, Space},
     Alignment, ContentFit, Element, Event, Font, Length, Size, Subscription, Task, Theme,
 };
 use std::{
@@ -445,13 +442,43 @@ impl UI {
             flag('C', regs.f.c),
         );
 
-        let trace = debug
-            .recent_instructions
-            .iter()
-            .rev()
-            .fold(column![].spacing(5), |trace, instruction| {
-                trace.push(text(instruction).size(13).font(Font::MONOSPACE))
-            });
+        let instructions = debug.recent_instructions.iter().fold(
+            column![].spacing(4),
+            |instructions, instruction| {
+                instructions.push(
+                    container(
+                        text(format!("  {instruction}"))
+                            .size(13)
+                            .font(Font::MONOSPACE),
+                    )
+                    .padding([2, 6]),
+                )
+            },
+        );
+
+        let instructions = debug.next_instructions.iter().enumerate().fold(
+            instructions,
+            |instructions, (index, instruction)| {
+                let line = text(if index == 0 {
+                    format!("▶ {instruction}")
+                } else {
+                    format!("  {instruction}")
+                })
+                .size(13)
+                .font(Font::MONOSPACE);
+
+                if index == 0 {
+                    instructions.push(
+                        container(line)
+                            .padding([4, 6])
+                            .width(Length::Fill)
+                            .style(container::primary),
+                    )
+                } else {
+                    instructions.push(container(line).padding([2, 6]))
+                }
+            },
+        );
 
         let panel = column![
             row![
@@ -476,13 +503,11 @@ impl UI {
                 .font(Font::MONOSPACE),
             rule::horizontal(1),
             row![
-                text("RECENT INSTRUCTIONS").size(12),
+                text("INSTRUCTIONS").size(12),
                 Space::new().width(Length::Fill),
-                text("newest first").size(11),
+                text("past → PC → future").size(11),
             ],
-            scrollable(trace).height(Length::Fill),
-            rule::horizontal(1),
-            text("NEXT: breakpoints · memory · watches").size(11),
+            instructions,
         ]
         .spacing(11);
 

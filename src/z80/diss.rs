@@ -156,10 +156,7 @@ pub fn disassemble(fetched: Fetched) -> String {
             ["LDDR", "CPDR", "INDR", "OTDR"],
         ][y - 4][z]
             .to_string(),
-        _ => panic!(
-            "Unknown instruction: pc:{:04x} prefix:{:04x} opCode:{:02x}",
-            fetched.pc, fetched.prefix, fetched.op_code,
-        ),
+        _ => format!("DB 0x{:02x}", fetched.op_code),
     };
     if fetched.prefix == 0xDD {
         if res.contains("(HL)") {
@@ -184,7 +181,147 @@ pub fn disassemble(fetched: Fetched) -> String {
     format!("{:04x} {}", fetched.pc, res)
 }
 
+pub(crate) fn disassemble_at(pc: u16, mut read: impl FnMut(u16) -> u8) -> (String, u16) {
+    let mut cursor = pc;
+    let mut prefix = 0u16;
+    let mut opcode = read(cursor);
+    cursor = cursor.wrapping_add(1);
+
+    if matches!(opcode, 0xdd | 0xfd) {
+        prefix = opcode as u16;
+        opcode = read(cursor);
+        cursor = cursor.wrapping_add(1);
+
+        if opcode == 0xcb {
+            let displacement = read(cursor);
+            cursor = cursor.wrapping_add(1);
+            opcode = read(cursor);
+            cursor = cursor.wrapping_add(1);
+            let fetched = fetched(
+                pc,
+                opcode,
+                (prefix << 8) | 0xcb,
+                None,
+                None,
+                Some(displacement),
+            );
+            return (disassemble(fetched), cursor);
+        }
+    } else if matches!(opcode, 0xcb | 0xed) {
+        prefix = opcode as u16;
+        opcode = read(cursor);
+        cursor = cursor.wrapping_add(1);
+    }
+
+    let (needs_displacement, immediate_bytes) = operands(prefix, opcode);
+    let displacement = needs_displacement.then(|| {
+        let value = read(cursor);
+        cursor = cursor.wrapping_add(1);
+        value
+    });
+
+    let (n, nn) = match immediate_bytes {
+        1 => {
+            let value = read(cursor);
+            cursor = cursor.wrapping_add(1);
+            (Some(value), None)
+        }
+        2 => {
+            let low = read(cursor);
+            let high = read(cursor.wrapping_add(1));
+            cursor = cursor.wrapping_add(2);
+            (None, Some(u16::from_le_bytes([low, high])))
+        }
+        _ => (None, None),
+    };
+
+    (
+        disassemble(fetched(pc, opcode, prefix, n, nn, displacement)),
+        cursor,
+    )
+}
+
+fn fetched(
+    pc: u16,
+    op_code: u8,
+    prefix: u16,
+    n: Option<u8>,
+    nn: Option<u16>,
+    d: Option<u8>,
+) -> Fetched {
+    Fetched {
+        pc,
+        op_code,
+        prefix,
+        n,
+        nn,
+        d,
+        decode_step: 0,
+        done: true,
+    }
+}
+
+fn operands(prefix: u16, opcode: u8) -> (bool, u8) {
+    let (x, y, z, p, q) = decode(opcode);
+
+    if prefix == 0xcb || prefix == 0xddcb || prefix == 0xfdcb {
+        return (false, 0);
+    }
+    if prefix == 0xed {
+        return (false, u8::from(x == 1 && z == 3) * 2);
+    }
+
+    let indexed = matches!(prefix, 0xdd | 0xfd);
+    match x {
+        0 => match z {
+            0 => (false, u8::from(y >= 2)),
+            1 => (false, if q == 0 { 2 } else { 0 }),
+            2 => (false, if p >= 2 { 2 } else { 0 }),
+            4 | 5 => (indexed && y == 6, 0),
+            6 => (indexed && y == 6, 1),
+            _ => (false, 0),
+        },
+        1 => (indexed && (y == 6 || z == 6) && !(y == 6 && z == 6), 0),
+        2 => (indexed && z == 6, 0),
+        3 => match z {
+            2 | 4 => (false, 2),
+            3 => (
+                false,
+                match y {
+                    0 => 2,
+                    2 | 3 => 1,
+                    _ => 0,
+                },
+            ),
+            5 => (false, if q == 1 && p == 0 { 2 } else { 0 }),
+            6 => (false, 1),
+            _ => (false, 0),
+        },
+        _ => unreachable!(),
+    }
+}
+
 fn to_abs_adrr(pc: u16, n: u8) -> u16 {
     let jump: i8 = n as i8;
     pc.wrapping_add(2).wrapping_add(jump as u16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::disassemble_at;
+
+    fn disassemble(bytes: &[u8]) -> (String, u16) {
+        disassemble_at(0x8000, |address| {
+            bytes[address.wrapping_sub(0x8000) as usize]
+        })
+    }
+
+    #[test]
+    fn advances_over_immediate_and_prefixed_instructions() {
+        assert_eq!(disassemble(&[0x3e, 0x42]).1, 0x8002);
+        assert_eq!(disassemble(&[0xc3, 0x34, 0x12]).1, 0x8003);
+        assert_eq!(disassemble(&[0xed, 0x43, 0x34, 0x12]).1, 0x8004);
+        assert_eq!(disassemble(&[0xdd, 0x36, 0x05, 0xaa]).1, 0x8004);
+        assert_eq!(disassemble(&[0xfd, 0xcb, 0xfe, 0x46]).1, 0x8004);
+    }
 }

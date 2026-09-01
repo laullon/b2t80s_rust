@@ -247,6 +247,23 @@ fn im1_interrupt_response_takes_thirteen_tstates() {
 }
 
 #[test]
+fn completed_instruction_log_is_oldest_to_newest() {
+    let mut cpu = CPU::new();
+    let mut completed = 0;
+
+    while completed < 3 {
+        if matches!(cpu.signals.mem, SignalReq::Read) {
+            cpu.signals.data = 0x00; // NOP
+        }
+        if cpu.tick().is_some() {
+            completed += 1;
+        }
+    }
+
+    assert_eq!(cpu.log, ["0000 NOP", "0001 NOP", "0002 NOP"]);
+}
+
+#[test]
 #[ignore = "long-running ZEXDOC diagnostic"]
 fn test_zexdoc() {
     let path = env::current_dir()

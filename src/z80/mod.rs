@@ -1,5 +1,5 @@
 pub mod cpu;
-mod diss;
+pub(crate) mod diss;
 mod ops_codes;
 pub mod registers;
 

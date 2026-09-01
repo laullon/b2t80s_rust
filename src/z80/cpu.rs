@@ -100,11 +100,6 @@ impl CPU {
 
         if matches!(self.current_ops, None) {
             if self.scheduler.is_empty() {
-                self.log.push(disassemble(self.fetched));
-                if self.log.len() == 10 {
-                    self.log.remove(0);
-                }
-
                 self.fetched = Fetched::new(self.regs.pc);
                 self.regs.index_mode = IndexMode::Hl;
 
@@ -169,6 +164,12 @@ impl CPU {
         };
 
         if matches!(self.current_ops, None) && self.scheduler.is_empty() {
+            if self.fetched.decode_step > 0 {
+                self.log.push(disassemble(self.fetched));
+                if self.log.len() > 9 {
+                    self.log.remove(0);
+                }
+            }
             return Some(self.regs.pc);
         }
         None

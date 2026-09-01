@@ -31,8 +31,9 @@ application.
 ## Debugger
 
 The desktop UI includes a live Z80 debugger panel with register and flag state,
-beam position, recent instructions, and controls to pause, resume, reset, or
-execute one instruction at a time.
+beam position, chronological instruction history, forward disassembly with the
+next instruction highlighted, and controls to pause, resume, reset, or execute
+one instruction at a time.
 
 Entering native fullscreen switches to presentation mode, showing only the
 Spectrum framebuffer. The debugger, toolbar, status bar, and panel chrome

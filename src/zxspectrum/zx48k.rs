@@ -12,7 +12,7 @@ use crate::signals::SignalReq;
 use crate::z80::cpu::{Operation, CPU};
 use crate::z80::registers::Registers;
 
-use super::tap::Tap;
+use super::tap::{Tap, TapePlayer};
 use super::ula::{TSTATES_PER_FRAME, TSTATES_PER_LINE, ULA};
 
 const CPU_CLOCK_HZ: u64 = 3_500_000;
@@ -22,6 +22,9 @@ const FIRST_CONTENDED_TSTATE: usize = 14_335;
 const CONTENDED_LINES: usize = 192;
 const CONTENDED_TSTATES_PER_LINE: usize = 128;
 const CONTENTION_PATTERN: [u8; 8] = [6, 5, 4, 3, 2, 1, 0, 0];
+const SCREEN_BITMAP_START: u16 = 0x4000;
+const SCREEN_BYTES: usize = 6_912;
+const FAST_SCREEN_HOLD_FRAMES: u8 = 100;
 
 #[derive(Debug)]
 pub enum MachineMessage {
@@ -29,6 +32,7 @@ pub enum MachineMessage {
     CPUResume,
     CPUStep,
     CPUSetRegisters(Registers),
+    SetFastTapeLoading(bool),
     TypeLoadCommand,
     Reset,
     TapLoad(std::path::PathBuf),
@@ -138,12 +142,15 @@ pub struct Zx48k {
 
     tap: Option<Tap>,
     tap_state: TapState,
+    tape_player: Option<TapePlayer>,
+    fast_tape_loading: bool,
 
     contention_remaining: u8,
     io_cycle_precontended: bool,
     paused: bool,
     step_instruction: bool,
     keyboard_script: Option<KeyboardScript>,
+    fast_screen_hold_frames: u8,
 
     machine_ctl_rx: Receiver<MachineMessage>,
     machine_ctl_tx: Sender<MachineMessage>,
@@ -183,11 +190,14 @@ impl Zx48k {
             machine_ctl_tx,
             tap: None,
             tap_state: TapState::Empty,
+            tape_player: None,
+            fast_tape_loading: true,
             contention_remaining: 0,
             io_cycle_precontended: false,
             paused: false,
             step_instruction: false,
             keyboard_script: None,
+            fast_screen_hold_frames: 0,
             ui_ctl_tx,
         })
     }
@@ -195,6 +205,7 @@ impl Zx48k {
     pub async fn run(self: &mut Self) -> ! {
         println!("Zx48k::run()");
         let mut interval = tokio::time::interval(FRAME_DURATION);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             for _ in 0..TSTATES_PER_FRAME {
@@ -215,22 +226,21 @@ impl Zx48k {
                         self.paused = true;
                         self.step_instruction = true;
                     }
+                    MachineMessage::SetFastTapeLoading(enabled) => {
+                        self.fast_tape_loading = enabled;
+                        self.tap = None;
+                        self.tape_player = None;
+                        self.tap_state = TapState::Empty;
+                        self.ula.set_tape_ear(false, false);
+                    }
                     MachineMessage::TypeLoadCommand => self.start_load_command(),
                     MachineMessage::Reset => self.reset(),
                     MachineMessage::CPUSetRegisters(_) => todo!(),
-                    MachineMessage::TapLoad(file) => match Tap::new(&file) {
-                        Ok(tap) => {
-                            self.tap = Some(tap);
-                            self.tap_state = TapState::Ready;
-                        }
-                        Err(error) => {
-                            eprintln!("Unable to load {}: {error:#}", file.display());
-                            self.reset();
-                        }
-                    },
+                    MachineMessage::TapLoad(file) => self.mount_tap(file),
                 }
             }
             self.advance_keyboard_script();
+            self.advance_fast_screen_hold();
             self.send_debug_snapshot();
             // println!("t: {}ms", t.elapsed().as_millis());
         }
@@ -244,6 +254,12 @@ impl Zx48k {
         if let Some(script) = self.keyboard_script.as_mut() {
             script.observe_pc(self.cpu.regs.pc);
         }
+
+        let (ear, tape_playing) = match self.tape_player.as_mut() {
+            Some(player) => (player.tick(), player.is_playing()),
+            None => (false, false),
+        };
+        self.ula.set_tape_ear(ear, tape_playing);
 
         let frame_tstate = self.ula.frame_tstate();
 
@@ -287,10 +303,12 @@ impl Zx48k {
             match self.tap_state {
                 TapState::Empty => {
                     self.tap_state = TapState::Loading;
+                    self.cpu.wait = true;
                     load_tap_file(self.machine_ctl_tx.clone());
                 }
                 TapState::Loading => (),
-                TapState::Ready => self.load_tap_block(),
+                TapState::Ready if self.fast_tape_loading => self.load_tap_block(),
+                TapState::Ready => (),
             }
         }
     }
@@ -300,9 +318,34 @@ impl Zx48k {
         self.paused = false;
         self.step_instruction = false;
         self.keyboard_script = None;
+        self.fast_screen_hold_frames = 0;
+        self.cpu.wait = false;
         self.ula.clean_keyboard();
+        self.ula.set_tape_ear(false, false);
         self.tap = None;
+        self.tape_player = None;
         self.tap_state = TapState::Empty;
+    }
+
+    fn mount_tap(&mut self, file: PathBuf) {
+        match Tap::new(&file) {
+            Ok(tap) if self.fast_tape_loading => {
+                self.tap = Some(tap);
+                self.tape_player = None;
+                self.tap_state = TapState::Ready;
+                self.load_tap_block();
+            }
+            Ok(tap) => {
+                self.tap = None;
+                self.tape_player = Some(tap.into_player());
+                self.tap_state = TapState::Ready;
+                self.cpu.wait = false;
+            }
+            Err(error) => {
+                eprintln!("Unable to load {}: {error:#}", file.display());
+                self.reset();
+            }
+        }
     }
 
     fn start_load_command(&mut self) {
@@ -338,6 +381,17 @@ impl Zx48k {
                 }
                 None => return,
             }
+        }
+    }
+
+    fn advance_fast_screen_hold(&mut self) {
+        if self.fast_screen_hold_frames == 0 {
+            return;
+        }
+
+        self.fast_screen_hold_frames -= 1;
+        if self.fast_screen_hold_frames == 0 {
+            self.cpu.wait = false;
         }
     }
 
@@ -453,15 +507,25 @@ impl Zx48k {
                 }
 
                 let mut checksum = data[0];
-                for i in 0..(requested_length as usize) {
-                    let loaded_byte = data[i + 1];
-                    self.mem_write(start_address.wrapping_add(i as u16), loaded_byte);
+                let payload = data[1..=requested_length as usize].to_vec();
+                for loaded_byte in &payload {
                     checksum ^= loaded_byte;
                 }
 
                 let expected_checksum = data[requested_length as usize + 1];
-                self.cpu.regs.f.c = checksum == expected_checksum;
-                println!("{checksum} == {expected_checksum} : {}", self.cpu.regs.f.c);
+                let checksum_ok = checksum == expected_checksum;
+                println!("{checksum} == {expected_checksum} : {checksum_ok}");
+
+                for (offset, loaded_byte) in payload.into_iter().enumerate() {
+                    self.mem_write(start_address.wrapping_add(offset as u16), loaded_byte);
+                }
+                self.cpu.regs.f.c = checksum_ok;
+                if checksum_ok
+                    && start_address == SCREEN_BITMAP_START
+                    && requested_length as usize >= SCREEN_BYTES
+                {
+                    self.fast_screen_hold_frames = FAST_SCREEN_HOLD_FRAMES;
+                }
             } else {
                 self.cpu.regs.f.c = true;
             }
@@ -472,7 +536,9 @@ impl Zx48k {
         }
 
         self.cpu.regs.pc = 0x05e2;
-        self.cpu.wait = false;
+        if self.fast_screen_hold_frames == 0 {
+            self.cpu.wait = false;
+        }
     }
 }
 
@@ -564,6 +630,14 @@ fn pending_io_cycle(cpu: &CPU) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fast_loading_screen_hold_is_about_two_seconds() {
+        let hold = FRAME_DURATION * FAST_SCREEN_HOLD_FRAMES as u32;
+
+        assert!(hold >= Duration::from_millis(1_900));
+        assert!(hold <= Duration::from_millis(2_100));
+    }
 
     #[test]
     fn load_command_types_the_spectrum_keyboard_sequence() {

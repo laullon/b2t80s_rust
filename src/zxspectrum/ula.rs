@@ -34,7 +34,7 @@ pub struct ULA {
     row: usize,
     floating_bus: u8,
     ear: bool,
-    ear_active: bool,
+    tape_playing: bool,
     buzzer: u8,
     sound: mpsc::Sender<f32>,
     sound_frame: u8,
@@ -75,7 +75,7 @@ impl ULA {
             row: 0,
             floating_bus: 0,
             ear: false,
-            ear_active: false,
+            tape_playing: false,
             buzzer: 0,
             sound: sound_tx,
             sound_frame: 0,
@@ -124,7 +124,15 @@ impl ULA {
         self.sound_frame += 1;
         if self.sound_frame == 200 {
             self.sound_frame = 0;
-            let t = -0.05 + ((self.buzzer as f32) * 0.1);
+            let t = if self.tape_playing {
+                if self.ear {
+                    0.08
+                } else {
+                    -0.08
+                }
+            } else {
+                -0.05 + ((self.buzzer as f32) * 0.1)
+            };
             match self.sound.send(t) {
                 Ok(_) => (),
                 Err(e) => println!("send error: {}", e),
@@ -271,7 +279,7 @@ impl ULA {
                     // );
                 }
             }
-            if self.ear_active && self.ear {
+            if self.tape_playing && self.ear {
                 data |= 0b11100000;
             } else {
                 data |= 0b10100000;
@@ -285,8 +293,12 @@ impl ULA {
         if port & 0xff == 0xfe {
             self.border_colour = PALETTE[data as usize & 0x07];
             self.buzzer = (data & 16) >> 4;
-            self.ear_active = (data & 24) != 0;
         }
+    }
+
+    pub(crate) fn set_tape_ear(&mut self, ear: bool, playing: bool) {
+        self.ear = ear;
+        self.tape_playing = playing;
     }
 
     fn get_pixels_colors(&self, attr: u8, pixels: u8) -> [u32; 8] {

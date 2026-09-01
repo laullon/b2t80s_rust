@@ -14,7 +14,10 @@ use iced::{
     },
     keyboard::Event as KeyEvent,
     stream,
-    widget::{button, column, container, image, row, rule, scrollable, slider, text, Image, Space},
+    widget::{
+        button, column, container, image, row, rule, scrollable, slider, text, toggler, Image,
+        Space,
+    },
     Alignment, ContentFit, Element, Event, Font, Length, Size, Subscription, Theme,
 };
 use std::{
@@ -89,6 +92,7 @@ enum Message {
     DebugSnapshot(DebugSnapshot),
     KeyEvent(KeyEvent),
     SetVolume(f32),
+    SetFastTapeLoading(bool),
     TogglePause,
     StepInstruction,
     LoadGame,
@@ -109,6 +113,7 @@ struct UI {
     fps: FPSCounter,
     debug: Option<DebugSnapshot>,
     paused: bool,
+    fast_tape_loading: bool,
     stream: Option<Stream>,
     volume: Arc<Mutex<f32>>,
     error: Option<String>,
@@ -161,6 +166,7 @@ impl Default for UI {
             fps: FPSCounter::new(),
             debug: None,
             paused: false,
+            fast_tape_loading: true,
             stream: None,
             volume: Arc::new(Mutex::new(0.5)),
             error: None,
@@ -233,6 +239,12 @@ impl UI {
                 *self.volume.lock().unwrap() = b;
                 println!("SetVolume: {}", b);
             }
+            (Message::SetFastTapeLoading(enabled), _) => {
+                self.fast_tape_loading = enabled;
+                if let Some(tx) = self.machine_ctl_tx.as_mut() {
+                    let _ = tx.start_send(MachineMessage::SetFastTapeLoading(enabled));
+                }
+            }
             (Message::Reset, _) => {
                 if let Some(tx) = self.machine_ctl_tx.as_mut() {
                     let _ = tx.start_send(MachineMessage::Reset);
@@ -293,6 +305,11 @@ impl UI {
             text("b2t80s").size(22),
             text("ZX Spectrum 48K").size(14),
             Space::new().width(Length::Fill),
+            toggler(self.fast_tape_loading)
+                .label("FAST TAPE")
+                .text_size(12)
+                .size(16)
+                .on_toggle(Message::SetFastTapeLoading),
             action(text("Load Game…"), Some(Message::LoadGame)),
             action(text(run_label), Some(Message::TogglePause)),
             action(

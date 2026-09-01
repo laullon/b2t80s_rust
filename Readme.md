@@ -36,7 +36,11 @@ execute one instruction at a time.
 
 The **Load Game…** control resets the Spectrum and types the original 48K BASIC
 `LOAD ""` key sequence. The ROM's existing tape-loading path then opens the
-native TAP file dialog.
+native TAP file dialog. **Fast Tape** uses the ROM trap for near-instant loads
+and holds a completed loading screen for about two seconds before continuing.
+Turn it off before loading to play the TAP as real EAR pulses, letting the
+original ROM produce authentic loading time, border stripes, screen reveal,
+and sound.
 
 Planned debugger additions include address and conditional breakpoints, a
 memory/stack inspector, watch expressions, and a raster timeline for diagnosing
